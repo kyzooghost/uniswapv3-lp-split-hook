@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+pragma solidity 0.8.28;
+import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
 
-contract Counter {
+contract UniswapV3LPSplitHook is IJBSplitHook {
     uint256 public number;
 
     function setNumber(uint256 newNumber) public {
