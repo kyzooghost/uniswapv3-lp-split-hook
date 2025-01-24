@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
+import { IJBController } from "@bananapus/core/interfaces/IJBController.sol";
+import { IJBDirectory } from "@bananapus/core/interfaces/IJBDirectory.sol";
 import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
+import { IJBTerminal } from "@bananapus/core/interfaces/IJBTerminal.sol";
+
 import { JBSplitHookContext } from "@bananapus/core/structs/JBSplitHookContext.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 
@@ -10,17 +14,24 @@ import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
  */
 contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook {
     // Do I need access control?
-  
+
+    /// @dev JuiceBox v4 Directory (to find important control contracts for given projectId)
+    address public immutable jbDirectory;
+
     /// @dev UniswapV3Factory address
     address public immutable uniswapV3Factory;
 
     /**
+    * @param _jbDirectory JuiceBox v4 Directory address
     * @param _uniswapV3Factory UniswapV3Factory address
     */
     constructor(
+        address _jbDirectory,
         address _uniswapV3Factory
     ) {
+        if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3Factory == address(0)) revert ZeroAddressNotAllowed();
+        jbDirectory = _jbDirectory;
         uniswapV3Factory = _uniswapV3Factory;
     }
 
@@ -29,11 +40,14 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook {
     function processSplitWith(JBSplitHookContext calldata _context) external payable {
         if (address(_context.split.hook) != address(this)) revert NotHookSpecifiedInContext();
 
-            // Validate that token has an ETH/token LP in Uniswap V3
-            // Validate that projectId is valid
-            // Validate that token for projectId is correct
-            // Validate that contract has the tokens claimed in params
-            // Validate that called by terminal
+        // Validate that msg.sender == Terminal or Controller as per the Directory
+        address controller = address(IJBDirectory(jbDirectory).controllerOf(_context.projectId));
+        if (controller == address(0)) revert InvalidProjectId();
+        if (controller != msg.sender && !IJBDirectory(jbDirectory).isTerminalOf(_context.projectId, IJBTerminal(msg.sender))) revert SplitSenderNotValidControllerOrTerminal();
+
+        // Key trust assumption - If the sender is a verified Terminal or Controller, then we can trust the remaining fields in the _context
+
+        // Validate that token has an ETH/token LP in Uniswap V3
 
 
         // Action
