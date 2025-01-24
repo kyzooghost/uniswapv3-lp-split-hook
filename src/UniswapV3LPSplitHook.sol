@@ -6,17 +6,16 @@ import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
 import { IJBTerminal } from "@bananapus/core/interfaces/IJBTerminal.sol";
 import { JBSplitHookContext } from "@bananapus/core/structs/JBSplitHookContext.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 
-// TODO - Register pool to use, if no pool registered then do nothing
+// TODO - Design decision - Register UniswapV3 pool to use, if no pool registered then do nothing
 
 /**
  * @title UniswapV3LPSplitHook
  * @notice JuiceBox v4 Split Hook contract that converts the received split into a Uniswap V3 ETH/Token LP
  */
-contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook {
-    // Do I need access control?
-
+contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     /// @dev JuiceBox v4 Directory (to find important control contracts for given projectId)
     address public immutable jbDirectory;
 
@@ -27,15 +26,19 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook {
     address public immutable uniswapV3Factory;
 
     /**
+    * @param _initialOwner Initial admin of the contract
     * @param _jbDirectory JuiceBox v4 Directory address
     * @param _weth wETH address
     * @param _uniswapV3Factory UniswapV3Factory address
     */
     constructor(
+        address _initialOwner,
         address _jbDirectory,
         address _weth,
         address _uniswapV3Factory
-    ) {
+    ) 
+        Ownable(_initialOwner)
+    {
         if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
         if (_weth == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3Factory == address(0)) revert ZeroAddressNotAllowed();
