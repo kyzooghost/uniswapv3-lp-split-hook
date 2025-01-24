@@ -4,9 +4,11 @@ import { IJBController } from "@bananapus/core/interfaces/IJBController.sol";
 import { IJBDirectory } from "@bananapus/core/interfaces/IJBDirectory.sol";
 import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
 import { IJBTerminal } from "@bananapus/core/interfaces/IJBTerminal.sol";
-
 import { JBSplitHookContext } from "@bananapus/core/structs/JBSplitHookContext.sol";
+import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
+
+// TODO - Register pool to use, if no pool registered then do nothing
 
 /**
  * @title UniswapV3LPSplitHook
@@ -18,20 +20,27 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook {
     /// @dev JuiceBox v4 Directory (to find important control contracts for given projectId)
     address public immutable jbDirectory;
 
+    /// @dev wETH address
+    address public immutable weth;
+
     /// @dev UniswapV3Factory address
     address public immutable uniswapV3Factory;
 
     /**
     * @param _jbDirectory JuiceBox v4 Directory address
+    * @param _weth wETH address
     * @param _uniswapV3Factory UniswapV3Factory address
     */
     constructor(
         address _jbDirectory,
+        address _weth,
         address _uniswapV3Factory
     ) {
         if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
+        if (_weth == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3Factory == address(0)) revert ZeroAddressNotAllowed();
         jbDirectory = _jbDirectory;
+        weth = _weth;
         uniswapV3Factory = _uniswapV3Factory;
     }
 
