@@ -51,12 +51,14 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     * @param _jbMultiTerminal JBMultiTerminal address
     * @param _weth wETH address
     * @param _uniswapV3Factory UniswapV3Factory address
+    * @param _uniswapPoolFee Uniswap pool fee (cannot be changed after deployment)
     */
     constructor(
         address _initialOwner,
         address _jbMultiTerminal,
         address _weth,
-        address _uniswapV3Factory
+        address _uniswapV3Factory,
+        uint256 _uniswapPoolFee
     ) 
         Ownable(_initialOwner)
     {
@@ -64,13 +66,17 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         if (_weth == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3Factory == address(0)) revert ZeroAddressNotAllowed();
         address _jbDirectory = address(IJBMultiTerminal(_jbMultiTerminal).DIRECTORY());
-        if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
         address _jbTokens = address(IJBMultiTerminal(_jbMultiTerminal).TOKENS());
-        
+        if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
+        if (_jbTokens == address(0)) revert ZeroAddressNotAllowed();
+        // TODO - Input validation of _uniswapPoolFee
+
         jbMultiTerminal = _jbMultiTerminal;
         jbDirectory = _jbDirectory;
+        jbTokens = _jbTokens;
         weth = _weth;
         uniswapV3Factory = _uniswapV3Factory;
+        uniswapPoolFee = _uniswapPoolFee;
     }
 
     /// @dev Tokens are optimistically transferred to this split hook contract
@@ -97,10 +103,12 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     function _processSplitWithProjectToken(JBSplitHookContext calldata _context) internal {
         address defaultTerminalToken = defaultTerminalTokenOf[_context.projectId];
         if (defaultTerminalToken == address(0)) {
-            // defaultTerminalToken = 
+            // Assume that first element of 'accountingContextsOf' contains the default terminal token
+            defaultTerminalToken = IJBMultiTerminal(jbMultiTerminal).accountingContextsOf(_context.projectId)[0].token;
         }
-        // Get default terminal token
-        // Does pool exist?
+        address pool = poolOf[_context.projectId][defaultTerminalToken];
+        if (pool == address(0)) _createUniswapV3Pool(_context, _context.token, defaultTerminalToken);
+        else _addLiquidityToUniswapV3Pool(_context, _context.token, defaultTerminalToken, pool);
         // No -> Create pool, add 50:50 LP at current project price
         // Yes -> Do swap, rebalance pool at current project prize
         // Do swap
@@ -109,6 +117,14 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     
     /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
     function _processSplitWithTerminalToken(JBSplitHookContext calldata _context) internal {}
+
+    function _createUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken) internal {
+        // Create pool
+        // Initialize pool
+    }
+
+    function _addLiquidityToUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken, address _pool) internal {
+    }
 
     // TODO - What other user features are needed for a good user experience for this?
     // ? Harvest LP fees - but what does LP fee accrue in?
