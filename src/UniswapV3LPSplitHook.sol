@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
+import { IJBControlled } from "@bananapus/core/interfaces/IJBControlled.sol";
 import { IJBController } from "@bananapus/core/interfaces/IJBController.sol";
 import { IJBDirectory } from "@bananapus/core/interfaces/IJBDirectory.sol";
 import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
@@ -9,15 +10,17 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 
-// TODO - Design decision - Register UniswapV3 pool to use, if no pool registered then do nothing
-
 /**
  * @title UniswapV3LPSplitHook
  * @notice JuiceBox v4 Split Hook contract that converts the received split into a Uniswap V3 ETH/Token LP
+ * @dev This contract assumes that it is the creator of the terminalToken/projectToken LP
  */
 contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     /// @dev JuiceBox v4 Directory (to find important control contracts for given projectId)
     address public immutable jbDirectory;
+
+    /// @dev JBTokens (to find project tokens)
+    address public immutable jbTokens;
 
     /// @dev wETH address
     address public immutable weth;
@@ -25,24 +28,36 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     /// @dev UniswapV3Factory address
     address public immutable uniswapV3Factory;
 
+    /// @dev UniswapV3 pool fee for all created Uniswap V3 pools, 
+    uint256 public immutable uniswapPoolFee;
+
+    /// @notice ProjectID => Terminal token => UniswapV3 terminalToken/projectToken pool address
+    mapping(uint256 projectId => address pool) public poolOf;
+
+    /// @notice ProjectID => Project token
+    mapping(uint256 projectId => address token) public tokenOf;
+
     /**
     * @param _initialOwner Initial admin of the contract
-    * @param _jbDirectory JuiceBox v4 Directory address
+    * @param _jbTokens JBTokens address
     * @param _weth wETH address
     * @param _uniswapV3Factory UniswapV3Factory address
     */
     constructor(
         address _initialOwner,
-        address _jbDirectory,
+        address _jbTokens,
         address _weth,
         address _uniswapV3Factory
     ) 
         Ownable(_initialOwner)
     {
-        if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
+        if (_jbTokens == address(0)) revert ZeroAddressNotAllowed();
         if (_weth == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3Factory == address(0)) revert ZeroAddressNotAllowed();
+        address _jbDirectory = address(IJBControlled(_jbTokens).DIRECTORY());
+        if (_jbDirectory == address(0)) revert ZeroAddressNotAllowed();
         jbDirectory = _jbDirectory;
+        jbTokens = _jbTokens;
         weth = _weth;
         uniswapV3Factory = _uniswapV3Factory;
     }
@@ -59,7 +74,14 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
 
         // Key trust assumption - If the sender is a verified Terminal or Controller, then we can trust the remaining fields in the _context
 
-        // Validate that token has an ETH/token LP in Uniswap V3
+        address currentPool = poolOf[_context.projectId];
+
+        if (currentPool == address(0)) {
+            
+            // TODO -> Create LP
+        } else {
+            // TODO - Add to LP
+        }
 
 
         // Action
