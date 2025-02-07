@@ -24,7 +24,8 @@ import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMe
 /**
  * @title UniswapV3LPSplitHook
  * @notice JuiceBox v4 Split Hook contract that converts the received split into a Uniswap V3 ETH/Token LP
- * @dev This contract assumes that it is the creator of the terminalToken/projectToken LP
+ * @dev This contract assumes that it is the creator of the terminalToken/projectToken UniswapV3 pool
+ * @dev This contract greedily assumes that any tokens it holds can be used to add to a UniswapV3 LP position. Please withdraw the token/s if you don't want them to be added to a UniswapV3 LP position in the future.
  */
 contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     using JBRulesetMetadataResolver for JBRuleset;
@@ -142,7 +143,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         }
         address pool = poolOf[_context.projectId][defaultTerminalToken];
         // No pre-existing pool => Create pool, and create first LP at current project price
-        if (pool == address(0)) _createUniswapV3Pool(_context, _context.token, defaultTerminalToken);
+        if (pool == address(0)) _createAndSeedUniswapV3Pool(_context, _context.token, defaultTerminalToken);
         // Pre-existing pool => Rebalance owned pool LP at current project price
         else _addLiquidityToUniswapV3Pool(_context, _context.token, defaultTerminalToken, pool);
     }
@@ -150,25 +151,20 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
     function _processSplitWithTerminalToken(JBSplitHookContext calldata _context) internal {}
 
-    function _createUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken) internal {
-        // Create pool
-        // Initialize pool
-        // Get current project price
-        // Create first LP
+    function _createAndSeedUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken) internal {
+        // Create and initialize pool
+        // _rebalanceUniswapV3Pool
     }
 
     function _addLiquidityToUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken, address _pool) internal {
-        // Withdraw all current liquidity
-
-        // Get current project price
-        // Add LP
-
-        // ? Optional swap leftover tokens
+        // _rebalanceUniswapV3Pool
     }
 
 
-    function rebalanceUniswapV3Pool(uint256 _projectId, address _terminalToken) external {
-
+    function _rebalanceUniswapV3Pool(uint256 _projectId, address _terminalToken) external {
+        // Withdraw all current liquidity (if no current liquidity, then nothing to do)
+        // Get current project price
+        // Add LP at current project price
     }
 
     /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
@@ -217,7 +213,9 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
 
     // TODO - What other user features are needed for a good user experience for this?
     // ? Harvest LP fees - but what does LP fee accrue in?
-    // ? Withdraw LP into terminal token or project token
+
+    // TODO - Protected withdraw LP function (with flag to withdraw directly into specified token)
+    // TODO - Protected withdraw token function
 
     function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {
         return interfaceId == type(IUniswapV3LPSplitHook).interfaceId
