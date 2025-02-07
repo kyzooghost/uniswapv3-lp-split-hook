@@ -17,7 +17,7 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
-// import {mulDiv} from "@prb/math/src/Common.sol";
+import {mulDiv} from "@prb/math/src/Common.sol";
 
 
 import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMetadataResolver.sol";
@@ -172,11 +172,11 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     }
 
     /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
-    function _getTerminalTokensOutForReserveTokenIn(
+    function _getProjectTokensOutForTerminalTokensIn(
         uint256 _projectId, 
         address _terminalToken, 
         uint256 _reserveTokenInAmount
-    ) internal returns (uint256 _terminalTokenOutAmount) {
+    ) internal view returns (uint256 terminalTokenOutAmount) {
         JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
         JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
         uint32 baseCurrency = ruleset.baseCurrency();
@@ -190,16 +190,29 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                 decimals: context.decimals
             });
 
-        // tokenCount = mulDiv(amount.value, weight, weightRatio);
+        terminalTokenOutAmount = mulDiv(_reserveTokenInAmount, ruleset.weight, weightRatio);
     }
 
     /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
-    function _getReserveTokensOutForTerminalTokenIn(
+    function _getTerminalTokensOutForProjectTokensIn(
         uint256 _projectId, 
         address _terminalToken, 
         uint256 _terminalTokenInAmount
-    ) internal returns (uint256 _reserveTokenOutAmount) {
+    ) internal returns (uint256 reserveTokenOutAmount) {
+        JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
+        JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
+        uint32 baseCurrency = ruleset.baseCurrency();
 
+        uint256 weightRatio = context.currency == baseCurrency
+            ? 10 ** context.decimals
+            : IJBPrices(jbPrices).pricePerUnitOf({
+                projectId: _projectId,
+                pricingCurrency: context.currency,
+                unitCurrency: baseCurrency,
+                decimals: context.decimals
+            });
+        
+        reserveTokenOutAmount = mulDiv(_terminalTokenInAmount, weightRatio, ruleset.weight);
     }
 
     // TODO - What other user features are needed for a good user experience for this?
