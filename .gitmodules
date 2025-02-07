@@ -13,3 +13,6 @@
 [submodule "lib/permit2"]
 	path = lib/permit2
 	url = https://github.com/uniswap/permit2
+[submodule "lib/prb-math"]
+	path = lib/prb-math
+	url = https://github.com/PaulRBerg/prb-math
