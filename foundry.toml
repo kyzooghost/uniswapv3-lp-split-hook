@@ -7,7 +7,6 @@ remappings = [
     "@openzeppelin/contracts=lib/openzeppelin-contracts/contracts",
     "@bananapus/core=lib/nana-core/src",
     "@uniswap/v3-core=lib/v3-core/contracts",
-    "@uniswap/v3-periphery=lib/v3-periphery/contracts",
     "@uniswap/permit2=lib/permit2",
     "@prb/math=lib/prb-math",
 ]
