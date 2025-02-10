@@ -17,6 +17,8 @@ import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.s
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
+import { IUniswapV3Pool } from "@uniswap/v3-core/interfaces/IUniswapV3Pool.sol";
+
 import {mulDiv} from "@prb/math/src/Common.sol";
 
 
@@ -26,9 +28,13 @@ import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMe
  * @notice JuiceBox v4 Split Hook contract that converts the received split into a Uniswap V3 ETH/Token LP
  * @dev This contract assumes that it is the creator of the terminalToken/projectToken UniswapV3 pool
  * @dev This contract greedily assumes that any tokens it holds can be used to add to a UniswapV3 LP position. Please withdraw the token/s if you don't want them to be added to a UniswapV3 LP position in the future.
+ * @dev This contract uses the UniswapV3 NonfungiblePositionManager as a standard abstraction for a pool position, rather than dealing with core Uniswap contracts directly.
  */
 contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     using JBRulesetMetadataResolver for JBRuleset;
+
+    /// @dev Hardcoded UniswapV3 fee of 0.3%
+    uint24 constant uniswapV3PoolFee = 3000;
 
     /// @dev JBDirectory (to find important control contracts for given projectId)
     address public immutable jbDirectory;
@@ -53,6 +59,9 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
 
     /// @dev UniswapV3Factory address
     address public immutable uniswapV3Factory;
+
+    /// @dev UniswapV3Factory address
+    address public immutable uniswapV3NonfungiblePositionManager;
 
     /// @dev UniswapV3 pool fee for all created Uniswap V3 pools, 
     uint256 public immutable uniswapPoolFee;
@@ -143,25 +152,30 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         }
         address pool = poolOf[_context.projectId][defaultTerminalToken];
         // No pre-existing pool => Create pool, and create first LP at current project price
-        if (pool == address(0)) _createAndSeedUniswapV3Pool(_context, _context.token, defaultTerminalToken);
+        if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, _context.token, defaultTerminalToken);
         // Pre-existing pool => Rebalance owned pool LP at current project price
-        else _addLiquidityToUniswapV3Pool(_context, _context.token, defaultTerminalToken, pool);
+        _rebalanceUniswapV3Pool(_context.projectId, defaultTerminalToken, pool);
     }
     
     /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
     function _processSplitWithTerminalToken(JBSplitHookContext calldata _context) internal {}
 
-    function _createAndSeedUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken) internal {
-        // Create and initialize pool
-        // _rebalanceUniswapV3Pool
+    function _createAndInitializeUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _terminalToken) internal {
+        // Create new UniswapV3 pool
+        address newPool = IUniswapV3Factory(uniswapV3Factory).createPool(_projectToken, _terminalToken, uniswapV3PoolFee);
+        
+        // TODO Initialize pool price - cast JB price to uint160 sqrtPriceX96
+        // IUniswapV3Pool(newPool).initialize(sqrtPriceX96);
+
+        poolOf[_context.projectId][_terminalToken] = newPool;
+        // TODO - Emit event
     }
 
-    function _addLiquidityToUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _reserveToken, address _pool) internal {
-        // _rebalanceUniswapV3Pool
-    }
+    function _rebalanceUniswapV3Pool(uint256 _projectId, address _terminalToken, address _pool) internal {
+        // Check if existing position exists
+        
 
 
-    function _rebalanceUniswapV3Pool(uint256 _projectId, address _terminalToken) external {
         // Withdraw all current liquidity (if no current liquidity, then nothing to do)
         // Get current project price
         // Add LP at current project price
@@ -194,7 +208,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         uint256 _projectId, 
         address _terminalToken, 
         uint256 _terminalTokenInAmount
-    ) internal returns (uint256 reserveTokenOutAmount) {
+    ) internal view returns (uint256 reserveTokenOutAmount) {
         JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
         JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
         uint32 baseCurrency = ruleset.baseCurrency();
