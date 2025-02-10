@@ -18,7 +18,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/interfaces/IUniswapV3Pool.sol";
-
+import { INonfungiblePositionManager } from "@uniswap/v3-periphery-flattened/INonfungiblePositionManager.sol";
 import {mulDiv} from "@prb/math/src/Common.sol";
 
 
