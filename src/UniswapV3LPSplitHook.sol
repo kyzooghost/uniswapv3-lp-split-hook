@@ -18,6 +18,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/interfaces/IUniswapV3Pool.sol";
+import { INonfungiblePositionManager } from "@uniswap/v3-periphery/interfaces/INonfungiblePositionManager.sol";
 
 import {mulDiv} from "@prb/math/src/Common.sol";
 
@@ -174,6 +175,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     function _rebalanceUniswapV3Pool(uint256 _projectId, address _terminalToken, address _pool) internal {
         // Check if existing position exists
         
+        // https://docs.uniswap.org/contracts/v3/reference/periphery/interfaces/INonfungiblePositionManager#positions
 
 
         // Withdraw all current liquidity (if no current liquidity, then nothing to do)
