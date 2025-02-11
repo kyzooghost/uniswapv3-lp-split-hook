@@ -65,6 +65,13 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     /// @dev 3000 => 0.3%
     uint24 public immutable uniswapPoolFee;
 
+    /// @dev Max variance tolerated between current pool LP tick, and current JuiceBox ruleset price
+    /// @dev If value is exceeded, then this contract will burn current liquidity and create a new LP position at the current JuiceBox ruleset price
+    uint24 public immutable maxTickVarianceFromCurrentRulesetPrice;
+
+    /// @dev Tick range to use for UniswapV3 LP position
+    uint24 public immutable tickRange;
+
     /// @notice ProjectID => Terminal token => UniswapV3 terminalToken/projectToken pool address
     /// @dev One project has one projectToken, but can have many terminalTokens
     /// @dev The project accepts terminalTokens for payment, and rewards projectTokens
@@ -89,6 +96,8 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     * @param _uniswapV3Factory UniswapV3Factory address
     * @param _uniswapV3NonfungiblePositionManager UniswapV3 NonfungiblePositionManager address
     * @param _uniswapPoolFee Uniswap pool fee (cannot be changed after deployment)
+    * @param _maxTickVarianceFromCurrentRulesetPrice Max tolerated variance between LP tick and current JB ruleset price (cannot be changed after deployment)
+    * @param _tickRange Uniswap LP tick range (cannot be changed after deployment)
     */
     constructor(
         address _initialOwner,
@@ -96,7 +105,9 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         address _weth,
         address _uniswapV3Factory,
         address _uniswapV3NonfungiblePositionManager,
-        uint24 _uniswapPoolFee
+        uint24 _uniswapPoolFee,
+        uint24 _maxTickVarianceFromCurrentRulesetPrice,
+        uint24 _tickRange
     ) 
         Ownable(_initialOwner)
     {
@@ -116,6 +127,8 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         if (_jbPrices == address(0)) revert ZeroAddressNotAllowed();
 
         // TODO - Input validation of _uniswapPoolFee
+        // TODO - Input validation of _maxTickVarianceFromCurrentRulesetPrice
+        // TODO - Input validation of _tickRange
 
         jbMultiTerminal = _jbMultiTerminal;
         jbDirectory = _jbDirectory;
@@ -128,6 +141,8 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         uniswapV3Factory = _uniswapV3Factory;
         uniswapV3NonfungiblePositionManager = _uniswapV3NonfungiblePositionManager;
         uniswapPoolFee = _uniswapPoolFee;
+        maxTickVarianceFromCurrentRulesetPrice = _maxTickVarianceFromCurrentRulesetPrice;
+        tickRange = _tickRange;
     }
 
     /// @dev Tokens are optimistically transferred to this split hook contract
@@ -175,9 +190,10 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
 
     function _createAndInitializeUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _terminalToken) internal {
         // TODO Initialize pool price - cast JB price to uint160 sqrtPriceX96
+        (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
         uint160 sqrtPriceX96;
         // Create new UniswapV3 pool
-        address newPool = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).createAndInitializePoolIfNecessary(_projectToken, _terminalToken, uniswapPoolFee, sqrtPriceX96);
+        address newPool = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).createAndInitializePoolIfNecessary(token0, token1, uniswapPoolFee, sqrtPriceX96);
         poolOf[_context.projectId][_terminalToken] = newPool;
         // TODO - Emit event
     }
@@ -189,13 +205,32 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
             // TODO - INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).mint()
         // Current position => Collect fees
         } else {
-            // TODO Collect fees - INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).collect()
+            // Collect fees
+            INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).collect(INonfungiblePositionManager.CollectParams ({
+                tokenId: tokenId,
+                recipient: address(this),
+                amount0Max: type(uint128).max,
+                amount1Max: type(uint128).max
+            }));
             // TODO Check if current project ruleset price is within current tick range of pool position
             // TODO True => Add all available liquidity at current project price
             // TODO False => Withdraw all current liquidity (decreaseLiquidity + burn) -> mint new position
             //      - Inefficiency in that we could remember and later reuse old liquidity position, rather than burning
         }        
     }
+
+    /// @dev Sort tokens because INonfungiblePositionManager.createAndInitializePoolIfNecessary does not do it for us
+    function _sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+        return tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+    }
+
+    function _getTickForCurrentJBRulesetPrice() internal returns (uint24 currentTick) {
+        return 0;
+    }
+
+    /// @dev `sqrtPriceX96 = sqrt(price) * (2 ** 96)` - https://ethereum.stackexchange.com/questions/98685/computing-the-uniswap-v3-pair-price-from-q64-96-number
+    /// @dev price = token1/token0 ratio
+    /// @dev https://blog.uniswap.org/uniswap-v3-math-primer
 
     /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
     function _getProjectTokensOutForTerminalTokensIn(
