@@ -19,7 +19,7 @@ import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/interfaces/IUniswapV3Pool.sol";
 import { INonfungiblePositionManager } from "@uniswap/v3-periphery-flattened/INonfungiblePositionManager.sol";
-import { mulDiv } from "@prb/math/src/Common.sol";
+import { mulDiv, sqrt } from "@prb/math/src/Common.sol";
 
 import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMetadataResolver.sol";
 /**
@@ -191,7 +191,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     function _createAndInitializeUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _terminalToken) internal {
         // TODO Initialize pool price - cast JB price to uint160 sqrtPriceX96
         (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
-        uint160 sqrtPriceX96;
+        uint160 sqrtPriceX96 = _getSqrtPriceX96ForCurrentJBRulesetPrice(_context.projectId, _projectToken, _terminalToken);
         // Create new UniswapV3 pool
         address newPool = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).createAndInitializePoolIfNecessary(token0, token1, uniswapPoolFee, sqrtPriceX96);
         poolOf[_context.projectId][_terminalToken] = newPool;
@@ -224,19 +224,54 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         return tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
     }
 
-    function _getTickForCurrentJBRulesetPrice() internal returns (uint24 currentTick) {
-        return 0;
+    /// @dev `sqrtPriceX96 = sqrt(token1/token0) * (2 ** 96)`
+    /// @dev price = token1/token0 = What amount of token1 has equivalent value to 1 token0
+    /// @dev See https://ethereum.stackexchange.com/questions/98685/computing-the-uniswap-v3-pair-price-from-q64-96-number
+    /// @dev Also see https://blog.uniswap.org/uniswap-v3-math-primer
+    function _getSqrtPriceX96ForCurrentJBRulesetPrice(
+        uint256 _projectId,
+        address _terminalToken,
+        address _projectToken
+    ) internal returns (uint160 sqrtPriceX96) {
+        (address token0, address token1) = _sortTokens(_terminalToken, _projectToken);
+        // Use standard denominator of 1 ether or 10**18
+        uint256 token0Amount = 1 ether;
+        uint256 token1Amount;
+        if (token0 == _terminalToken) {
+            token1Amount = _getProjectTokensOutForTerminalTokensIn(_projectId, _terminalToken, token0Amount);
+        } else {
+            token1Amount = _getTerminalTokensOutForProjectTokensIn(_projectId, _terminalToken, token0Amount);
+        }
+        return uint160(mulDiv(sqrt(token1Amount), 2**96,sqrt(token0Amount)));
     }
-
-    /// @dev `sqrtPriceX96 = sqrt(price) * (2 ** 96)` - https://ethereum.stackexchange.com/questions/98685/computing-the-uniswap-v3-pair-price-from-q64-96-number
-    /// @dev price = token1/token0 ratio
-    /// @dev https://blog.uniswap.org/uniswap-v3-math-primer
 
     /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
     function _getProjectTokensOutForTerminalTokensIn(
         uint256 _projectId, 
+        address _terminalToken,
+        uint256 _terminalTokenInAmount
+    ) internal view returns (uint256 projectTokenOutAmount) {
+        JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
+        JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
+        uint32 baseCurrency = ruleset.baseCurrency();
+
+        uint256 weightRatio = context.currency == baseCurrency
+            ? 10 ** context.decimals
+            : IJBPrices(jbPrices).pricePerUnitOf({
+                projectId: _projectId,
+                pricingCurrency: context.currency,
+                unitCurrency: baseCurrency,
+                decimals: context.decimals
+            });
+
+        projectTokenOutAmount = mulDiv(_terminalTokenInAmount, ruleset.weight, weightRatio);
+    }
+
+    /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
+    function _getTerminalTokensOutForProjectTokensIn(
+        uint256 _projectId, 
         address _terminalToken, 
-        uint256 _reserveTokenInAmount
+        uint256 _projectTokenInAmount
     ) internal view returns (uint256 terminalTokenOutAmount) {
         JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
         JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
@@ -250,30 +285,8 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                 unitCurrency: baseCurrency,
                 decimals: context.decimals
             });
-
-        terminalTokenOutAmount = mulDiv(_reserveTokenInAmount, ruleset.weight, weightRatio);
-    }
-
-    /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
-    function _getTerminalTokensOutForProjectTokensIn(
-        uint256 _projectId, 
-        address _terminalToken, 
-        uint256 _terminalTokenInAmount
-    ) internal view returns (uint256 reserveTokenOutAmount) {
-        JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
-        JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
-        uint32 baseCurrency = ruleset.baseCurrency();
-
-        uint256 weightRatio = context.currency == baseCurrency
-            ? 10 ** context.decimals
-            : IJBPrices(jbPrices).pricePerUnitOf({
-                projectId: _projectId,
-                pricingCurrency: context.currency,
-                unitCurrency: baseCurrency,
-                decimals: context.decimals
-            });
         
-        reserveTokenOutAmount = mulDiv(_terminalTokenInAmount, weightRatio, ruleset.weight);
+        terminalTokenOutAmount = mulDiv(_projectTokenInAmount, weightRatio, ruleset.weight);
     }
 
     // TODO - What other user features are needed for a good user experience for this?
