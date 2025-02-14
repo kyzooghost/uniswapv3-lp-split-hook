@@ -13,11 +13,13 @@ import { IJBPrices } from "@bananapus/core/interfaces/IJBPrices.sol";
 import { JBSplitHookContext } from "@bananapus/core/structs/JBSplitHookContext.sol";
 import { JBAccountingContext } from "@bananapus/core/structs/JBAccountingContext.sol";
 import { JBRuleset } from "@bananapus/core/structs/JBRuleset.sol";
+import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/interfaces/IUniswapV3Pool.sol";
+import { TickMath } from "@uniswap/v3-core-patched/TickMath.sol";
 import { INonfungiblePositionManager } from "@uniswap/v3-periphery-flattened/INonfungiblePositionManager.sol";
 import { mulDiv, sqrt } from "@prb/math/src/Common.sol";
 
@@ -67,10 +69,10 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
 
     /// @dev Max variance tolerated between current pool LP tick, and current JuiceBox ruleset price
     /// @dev If value is exceeded, then this contract will burn current liquidity and create a new LP position at the current JuiceBox ruleset price
-    uint24 public immutable maxTickVarianceFromCurrentRulesetPrice;
+    int24 public immutable maxTickVarianceFromCurrentRulesetPrice;
 
     /// @dev Tick range to use for UniswapV3 LP position
-    uint24 public immutable tickRange;
+    int24 public immutable tickRange;
 
     /// @notice ProjectID => Terminal token => UniswapV3 terminalToken/projectToken pool address
     /// @dev One project has one projectToken, but can have many terminalTokens
@@ -106,8 +108,8 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         address _uniswapV3Factory,
         address _uniswapV3NonfungiblePositionManager,
         uint24 _uniswapPoolFee,
-        uint24 _maxTickVarianceFromCurrentRulesetPrice,
-        uint24 _tickRange
+        int24 _maxTickVarianceFromCurrentRulesetPrice,
+        int24 _tickRange
     ) 
         Ownable(_initialOwner)
     {
@@ -174,17 +176,17 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         }
         address pool = poolOf[_context.projectId][defaultTerminalToken];
         if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, _context.token, defaultTerminalToken);
-        _rebalanceUniswapV3Pool(_context.projectId, defaultTerminalToken, pool);
+        _rebalanceUniswapV3Pool(_context.projectId, _context.token, defaultTerminalToken, pool);
     }
     
     /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
     function _processSplitWithTerminalToken(JBSplitHookContext calldata _context) internal {
-        // TODO Get from projectId
+        // TODO Get projectToken from projectId
         address projectToken;
 
         address pool = poolOf[_context.projectId][_context.token];
         if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, projectToken, _context.token);
-        _rebalanceUniswapV3Pool(_context.projectId, _context.token, pool);
+        _rebalanceUniswapV3Pool(_context.projectId, projectToken, _context.token, pool);
 
     }
 
@@ -198,19 +200,41 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         // TODO - Emit event
     }
 
-    function _rebalanceUniswapV3Pool(uint256 _projectId, address _terminalToken, address _pool) internal {
+    function _rebalanceUniswapV3Pool(
+        uint256 _projectId, 
+        address _projectToken,
+        address _terminalToken,
+        address _pool
+    ) internal {
         uint256 tokenId = poolPositionTokenIdOf[_pool];
+        int24 currentRulesetTick = TickMath.getTickAtSqrtRatio(_getSqrtPriceX96ForCurrentJBRulesetPrice(_projectId, _projectToken, _terminalToken));
         // No current position, mint and add liquidity
         if (tokenId == 0) {
-            // TODO - INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).mint()
+            (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
+            (uint256 amount0, uint256 amount1) = _getAddLiquidityAmounts(_projectId, _projectToken, _terminalToken);
+            INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).mint(
+                INonfungiblePositionManager.MintParams ({
+                    token0: token0,
+                    token1: token1,
+                    fee: uniswapPoolFee,
+                    tickLower: currentRulesetTick - (tickRange / 2),
+                    tickUpper: currentRulesetTick + (tickRange / 2),
+                    amount0Desired: amount0,
+                    amount1Desired: amount1,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    recipient: address(this),
+                    deadline: block.timestamp
+            }));
         // Current position => Collect fees
         } else {
             // Collect fees
-            INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).collect(INonfungiblePositionManager.CollectParams ({
-                tokenId: tokenId,
-                recipient: address(this),
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
+            INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).collect(
+                INonfungiblePositionManager.CollectParams ({
+                    tokenId: tokenId,
+                    recipient: address(this),
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
             }));
             // TODO Check if current project ruleset price is within current tick range of pool position
             // TODO True => Add all available liquidity at current project price
@@ -224,6 +248,25 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         return tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
     }
 
+    function _getAddLiquidityAmounts(
+        uint256 _projectId,
+        address _terminalToken,
+        address _projectToken
+    ) internal returns (uint256 token0Amount, uint256 token1Amount) {
+        uint256 terminalTokenBalance = IERC20(_terminalToken).balanceOf(address(this));
+        uint256 projectTokenBalance = IERC20(_projectToken).balanceOf(address(this));
+        uint256 terminalTokenBalanceToProjectToken = _getProjectTokensOutForTerminalTokensIn(_projectId, _terminalToken, terminalTokenBalance);
+        (address token0, address token1) = _sortTokens(_terminalToken, _projectToken);
+        // terminalToken is the limiting amount
+        if (terminalTokenBalanceToProjectToken <= projectTokenBalance) {
+            return _terminalToken == token0 ? (terminalTokenBalance, terminalTokenBalanceToProjectToken) : (terminalTokenBalanceToProjectToken, terminalTokenBalance);
+        // projectToken is the limiting amount
+        } else {
+            uint256 terminalTokenDownScaled = terminalTokenBalance * projectTokenBalance / terminalTokenBalanceToProjectToken;
+            return _terminalToken == token0 ? (terminalTokenDownScaled, projectTokenBalance) : (projectTokenBalance, terminalTokenDownScaled);
+        }
+    }
+
     /// @dev `sqrtPriceX96 = sqrt(token1/token0) * (2 ** 96)`
     /// @dev price = token1/token0 = What amount of token1 has equivalent value to 1 token0
     /// @dev See https://ethereum.stackexchange.com/questions/98685/computing-the-uniswap-v3-pair-price-from-q64-96-number
@@ -232,7 +275,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         uint256 _projectId,
         address _terminalToken,
         address _projectToken
-    ) internal returns (uint160 sqrtPriceX96) {
+    ) internal view returns (uint160 sqrtPriceX96) {
         (address token0, address token1) = _sortTokens(_terminalToken, _projectToken);
         // Use standard denominator of 1 ether or 10**18
         uint256 token0Amount = 1 ether;
