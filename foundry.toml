@@ -12,5 +12,7 @@ remappings = [
     "@uniswap/permit2=lib/permit2",
     "@prb/math=lib/prb-math",
 ]
+# Required to avoid stack too deep for invoking INonfungiblePositionManager.position() as per https://github.com/Uniswap/v3-periphery/issues/273
+optimizer_runs=1000
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

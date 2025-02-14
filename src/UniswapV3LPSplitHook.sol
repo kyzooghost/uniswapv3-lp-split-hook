@@ -210,22 +210,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         int24 currentRulesetTick = TickMath.getTickAtSqrtRatio(_getSqrtPriceX96ForCurrentJBRulesetPrice(_projectId, _projectToken, _terminalToken));
         // No current position, mint and add liquidity
         if (tokenId == 0) {
-            (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
-            (uint256 amount0, uint256 amount1) = _getAddLiquidityAmounts(_projectId, _projectToken, _terminalToken);
-            INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).mint(
-                INonfungiblePositionManager.MintParams ({
-                    token0: token0,
-                    token1: token1,
-                    fee: uniswapPoolFee,
-                    tickLower: currentRulesetTick - (tickRange / 2),
-                    tickUpper: currentRulesetTick + (tickRange / 2),
-                    amount0Desired: amount0,
-                    amount1Desired: amount1,
-                    amount0Min: 0,
-                    amount1Min: 0,
-                    recipient: address(this),
-                    deadline: block.timestamp
-            }));
+            _mintAndAddNewLiquidityPosition(_pool, _projectId, _projectToken, _terminalToken, currentRulesetTick);
         // Current position => Collect fees
         } else {
             // Collect fees
@@ -236,11 +221,57 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                     amount0Max: type(uint128).max,
                     amount1Max: type(uint128).max
             }));
-            // TODO Check if current project ruleset price is within current tick range of pool position
+
+            // Check if current project ruleset price is within current tick range of pool position
+            (,,,,,int24 tickLower,int24 tickUpper,uint128 liquidity,,,,) = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).positions(tokenId);
             // TODO True => Add all available liquidity at current project price
+            if ((currentRulesetTick >= tickLower) && (currentRulesetTick <= tickUpper)) {
+                (uint256 amount0, uint256 amount1) = _getAddLiquidityAmounts(_projectId, _projectToken, _terminalToken);
+                INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).increaseLiquidity(
+                    INonfungiblePositionManager.IncreaseLiquidityParams ({
+                        tokenId: tokenId,
+                        amount0Desired: amount0,
+                        amount1Desired: amount1,
+                        amount0Min: 0,
+                        amount1Min: 0,
+                        deadline: block.timestamp
+                }));
+
             // TODO False => Withdraw all current liquidity (decreaseLiquidity + burn) -> mint new position
             //      - Inefficiency in that we could remember and later reuse old liquidity position, rather than burning
+            } else {
+                INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).decreaseLiquidity(
+                    INonfungiblePositionManager.DecreaseLiquidityParams ({
+                        tokenId: tokenId,
+                        liquidity: liquidity,
+                        amount0Min: 0,
+                        amount1Min: 0,
+                        deadline: block.timestamp
+                }));
+                INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).burn(tokenId);
+                _mintAndAddNewLiquidityPosition(_pool, _projectId, _projectToken, _terminalToken, currentRulesetTick);
+            }
         }        
+    }
+    
+    function _mintAndAddNewLiquidityPosition(address _pool, uint256 _projectId, address _projectToken, address _terminalToken, int24 _currentRulesetTick) internal {
+        (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
+        (uint256 amount0, uint256 amount1) = _getAddLiquidityAmounts(_projectId, _projectToken, _terminalToken);
+        (uint256 tokenId,,,) = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).mint(
+            INonfungiblePositionManager.MintParams ({
+                token0: token0,
+                token1: token1,
+                fee: uniswapPoolFee,
+                tickLower: _currentRulesetTick - (tickRange / 2),
+                tickUpper: _currentRulesetTick + (tickRange / 2),
+                amount0Desired: amount0,
+                amount1Desired: amount1,
+                amount0Min: 0,
+                amount1Min: 0,
+                recipient: address(this),
+                deadline: block.timestamp
+        }));
+        poolPositionTokenIdOf[_pool] = tokenId;
     }
 
     /// @dev Sort tokens because INonfungiblePositionManager.createAndInitializePoolIfNecessary does not do it for us
