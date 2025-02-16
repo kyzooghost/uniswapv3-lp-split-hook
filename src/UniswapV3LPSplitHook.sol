@@ -1,57 +1,61 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.28;
+
 import { IJBController } from "@bananapus/core/interfaces/IJBController.sol";
 import { IJBDirectory } from "@bananapus/core/interfaces/IJBDirectory.sol";
 import { IJBMultiTerminal } from "@bananapus/core/interfaces/IJBMultiTerminal.sol";
+import { IJBPrices } from "@bananapus/core/interfaces/IJBPrices.sol";
 import { IJBRulesets } from "@bananapus/core/interfaces/IJBRulesets.sol";
-
 import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
 import { IJBTerminal } from "@bananapus/core/interfaces/IJBTerminal.sol";
 import { IJBTerminalStore } from "@bananapus/core/interfaces/IJBTerminalStore.sol";
-import { IJBPrices } from "@bananapus/core/interfaces/IJBPrices.sol";
-
-import { JBSplitHookContext } from "@bananapus/core/structs/JBSplitHookContext.sol";
 import { JBAccountingContext } from "@bananapus/core/structs/JBAccountingContext.sol";
 import { JBRuleset } from "@bananapus/core/structs/JBRuleset.sol";
+import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMetadataResolver.sol";
+import { JBSplitHookContext } from "@bananapus/core/structs/JBSplitHookContext.sol";
+
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
+
+import { mulDiv, sqrt } from "@prb/math/src/Common.sol";
+
+import { INonfungiblePositionManager } from "@uniswap/v3-periphery-flattened/INonfungiblePositionManager.sol";
 import { IUniswapV3Factory } from "@uniswap/v3-core/interfaces/IUniswapV3Factory.sol";
 import { IUniswapV3Pool } from "@uniswap/v3-core/interfaces/IUniswapV3Pool.sol";
 import { TickMath } from "@uniswap/v3-core-patched/TickMath.sol";
-import { INonfungiblePositionManager } from "@uniswap/v3-periphery-flattened/INonfungiblePositionManager.sol";
-import { mulDiv, sqrt } from "@prb/math/src/Common.sol";
 
-import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMetadataResolver.sol";
+import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
+
 /**
  * @title UniswapV3LPSplitHook
- * @notice JuiceBox v4 Split Hook contract that converts the received split into a Uniswap V3 ETH/Token LP
- * @dev This contract assumes that it is the creator of the terminalToken/projectToken UniswapV3 pool
- * @dev This contract greedily assumes that any tokens it holds can be used to add to a UniswapV3 LP position. 
- * @dev Please withdraw the token/s if you don't want them to be added to a UniswapV3 LP position in the future.
- * @dev This contract uses the UniswapV3 NonfungiblePositionManager as a standard abstraction for a pool position.
- * @dev For any given UniswapV3 pool, this contract will only control at most one single LP position
+ * @notice JuiceBoxV4 IJBSplitHook contract that converts a received split into a UniswapV3 projectToken/terminalToken LP.
+ * 
+ * Key assumptions include:
+ * @dev This contract is the creator of the projectToken/terminalToken UniswapV3 pool.
+ * @dev Any tokens held by the contract can be added to a UniswapV3 LP position.
+ * @dev For any given UniswapV3 pool, the contract will control a single LP position.
  */
 contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     using JBRulesetMetadataResolver for JBRuleset;
 
+    /// @dev JBMultiTerminal (used to find JBDirectory and JBTokens)
+    /// @dev We assume there a single instance of this contract
+    address public immutable jbMultiTerminal;
+
     /// @dev JBDirectory (to find important control contracts for given projectId)
     address public immutable jbDirectory;
-
-    /// @dev JBMultiTerminal (assume there is a singleton instance on the chain, and use to find JBDirectory and JBTokens)
-    address public immutable jbMultiTerminal;
 
     /// @dev JBTokens (to find project tokens)
     address public immutable jbTokens;
 
-    /// @dev JBRulesets (The contract storing and managing project rulesets)
+    /// @dev JBRulesets (Stores and manages project rulesets)
     address public immutable jbRulesets;
 
-    /// @dev JBTerminalStore (The contract that stores and manages the terminal's data)
+    /// @dev JBTerminalStore (Stores and manages terminal data)
     address public immutable jbTerminalStore;
 
-    /// @dev JBPrices (The contract that exposes price feeds)
+    /// @dev JBPrices (Price feeds)
     address public immutable jbPrices;
 
     /// @dev wETH address
@@ -60,11 +64,10 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     /// @dev UniswapV3Factory address
     address public immutable uniswapV3Factory;
 
-    /// @dev UniswapV3Factory address
+    /// @dev UniswapV3 NonFungiblePositionManager address
     address public immutable uniswapV3NonfungiblePositionManager;
 
-    /// @dev UniswapV3 pool fee for all created Uniswap V3 pools, 
-    /// @dev 3000 => 0.3%
+    /// @dev Single immutable 'fee' value for all created UniswapV3 pools.
     uint24 public immutable uniswapPoolFee;
 
     /// @dev Max variance tolerated between current pool LP tick, and current JuiceBox ruleset price
