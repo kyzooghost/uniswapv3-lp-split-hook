@@ -30,7 +30,7 @@ import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 
 /**
  * @title UniswapV3LPSplitHook
- * @notice JuiceBoxV4 IJBSplitHook contract that converts a received split into a UniswapV3 projectToken/terminalToken LP.
+ * @notice JuiceboxV4 IJBSplitHook contract that converts a received split into a UniswapV3 projectToken/terminalToken LP.
  * 
  * Key assumptions include:
  * @dev This contract is the creator of the projectToken/terminalToken UniswapV3 pool.
@@ -139,13 +139,13 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     }
 
     /**
-    * @notice IJbSplitHook function called by JuiceBoxV4 terminal/controller when sending funds to designated split hook contract.
+    * @notice IJbSplitHook function called by JuiceboxV4 terminal/controller when sending funds to designated split hook contract.
     * @dev Tokens are optimistically transferred to this split hook contract
-    * @param _context Contextual data passed by JuiceBoxV4 terminal/controller
+    * @param _context Contextual data passed by JuiceboxV4 terminal/controller
     */
     function processSplitWith(JBSplitHookContext calldata _context) external payable {
         if (address(_context.split.hook) != address(this)) revert NotHookSpecifiedInContext();
-        // Validate that msg.sender is a JuiceBoxV4 Terminal or Controller (using Directory as the source of truth)
+        // Validate that msg.sender is a JuiceboxV4 Terminal or Controller (using Directory as the source of truth)
         address controller = address(IJBDirectory(jbDirectory).controllerOf(_context.projectId));
         if (controller == address(0)) revert InvalidProjectId();
         if (controller != msg.sender && !IJBDirectory(jbDirectory).isTerminalOf(_context.projectId, IJBTerminal(msg.sender))) revert SplitSenderNotValidControllerOrTerminal();
@@ -167,39 +167,46 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         
         address pool = poolOf[_context.projectId][terminalToken];
         if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, projectToken, terminalToken);
-        _rebalanceUniswapV3Pool(_context.projectId, projectToken, terminalToken, pool);
+        _addUniswapLiquidityAndBurnStaleLiquidity(_context.projectId, projectToken, terminalToken, pool);
         // TODO Emit event
     }
 
     /**
     * @notice Create and initialize UniswapV3 pool
-    * @param _context Contextual data passed by JuiceBoxV4 terminal/controller
+    * @param _context Contextual data passed by JuiceboxV4 terminal/controller
     * @param _projectToken Project token
     * @param _terminalToken Terminal token
     */
     function _createAndInitializeUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _terminalToken) internal {
         (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
-        uint160 sqrtPriceX96 = _getSqrtPriceX96ForCurrentJBRulesetPrice(_context.projectId, _projectToken, _terminalToken);
+        uint160 sqrtPriceX96 = _getSqrtPriceX96ForCurrentJuiceboxPrice(_context.projectId, _projectToken, _terminalToken);
         address newPool = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).createAndInitializePoolIfNecessary(token0, token1, uniswapPoolFee, sqrtPriceX96);
         poolOf[_context.projectId][_terminalToken] = newPool;
         // TODO - Emit event
     }
 
-    // TODO - Better name, reflecting that we add all max liquidity possible and burn stale position if needed
-    function _rebalanceUniswapV3Pool(
+    /**
+    * @notice Add liquidity to a UniswapV3 pool at the current Juicebox price
+    * @notice Checks if an existing liquidity position has a stale price, in which case the stale liquidity position is burned and a new liquidity position is created at the current Juicebox price
+    * @dev This function greedily assumes that all tokens held by the contract are available to be added as UniswapV3 pool liquidity
+    * @param _projectId JuiceboxV4 projectId
+    * @param _projectToken Project token
+    * @param _terminalToken Terminal token
+    * @param _pool UniswapV3 pool
+    */
+    function _addUniswapLiquidityAndBurnStaleLiquidity (
         uint256 _projectId, 
         address _projectToken,
         address _terminalToken,
         address _pool
     ) internal {
         uint256 tokenId = tokenIdForPool[_pool];
-        int24 currentRulesetTick = TickMath.getTickAtSqrtRatio(_getSqrtPriceX96ForCurrentJBRulesetPrice(_projectId, _projectToken, _terminalToken));
-        // No current position, mint and add liquidity
+        int24 currentJuiceboxPriceTick = TickMath.getTickAtSqrtRatio(_getSqrtPriceX96ForCurrentJuiceboxPrice(_projectId, _projectToken, _terminalToken));
         if (tokenId == 0) {
-            _mintAndAddNewLiquidityPosition(_pool, _projectId, _projectToken, _terminalToken, currentRulesetTick);
-        // Current position => Collect fees
+            // No current position => mint and add liquidity
+            _mintAndAddNewLiquidityPosition(_projectId, _projectToken, _terminalToken, _pool, currentJuiceboxPriceTick);
         } else {
-            // Collect fees
+            // Current position => Collect fees, check if current position is stale, then add liquidity
             INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).collect(
                 INonfungiblePositionManager.CollectParams ({
                     tokenId: tokenId,
@@ -207,11 +214,10 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                     amount0Max: type(uint128).max,
                     amount1Max: type(uint128).max
             }));
-
-            // Check if current project ruleset price is within current tick range of pool position
+            // Check if currentJuiceboxPriceTick is within the tick range of the current pool position
             (,,,,,int24 tickLower,int24 tickUpper,uint128 liquidity,,,,) = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).positions(tokenId);
-            // TODO True => Add all available liquidity at current project price
-            if ((currentRulesetTick >= tickLower) && (currentRulesetTick <= tickUpper)) {
+            if ((currentJuiceboxPriceTick >= tickLower) && (currentJuiceboxPriceTick <= tickUpper)) {
+                // Not stale => add liquidity to current position
                 (uint256 amount0, uint256 amount1) = _getAddLiquidityAmounts(_projectId, _projectToken, _terminalToken);
                 INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).increaseLiquidity(
                     INonfungiblePositionManager.IncreaseLiquidityParams ({
@@ -222,10 +228,9 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                         amount1Min: 0,
                         deadline: block.timestamp
                 }));
-
-            // TODO False => Withdraw all current liquidity (decreaseLiquidity + burn) -> mint new position
-            //      - Inefficiency in that we could remember and later reuse old liquidity position, rather than burning
             } else {
+                // Stale => burn current liquidity, then mint new position at currentJuiceboxPriceTick
+                /// @dev Gas vs dev bookkeeping tradeoff here. We could remember and later reuse old liquidity position, rather than burning, but this would introduce nontrivial code complexity to check for 'previously abandoned but now valid' liquidity positions.
                 INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).decreaseLiquidity(
                     INonfungiblePositionManager.DecreaseLiquidityParams ({
                         tokenId: tokenId,
@@ -235,12 +240,20 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                         deadline: block.timestamp
                 }));
                 INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).burn(tokenId);
-                _mintAndAddNewLiquidityPosition(_pool, _projectId, _projectToken, _terminalToken, currentRulesetTick);
+                _mintAndAddNewLiquidityPosition(_projectId, _projectToken, _terminalToken, _pool, currentJuiceboxPriceTick);
             }
         }        
     }
     
-    function _mintAndAddNewLiquidityPosition(address _pool, uint256 _projectId, address _projectToken, address _terminalToken, int24 _currentRulesetTick) internal {
+    /**
+    * @notice Create a new UniswapV3 liquidity position
+    * @param _projectId JuiceboxV4 projectId
+    * @param _projectToken Project token
+    * @param _terminalToken Terminal token
+    * @param _pool UniswapV3 pool
+    * @param _currentJuiceboxPriceTick Tick (in UniswapV3 nomenclature) representing the current Juicebox price
+    */
+    function _mintAndAddNewLiquidityPosition(uint256 _projectId, address _projectToken, address _terminalToken, address _pool, int24 _currentJuiceboxPriceTick) internal {
         (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
         (uint256 amount0, uint256 amount1) = _getAddLiquidityAmounts(_projectId, _projectToken, _terminalToken);
         (uint256 tokenId,,,) = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).mint(
@@ -248,8 +261,8 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                 token0: token0,
                 token1: token1,
                 fee: uniswapPoolFee,
-                tickLower: _currentRulesetTick - (tickRange / 2),
-                tickUpper: _currentRulesetTick + (tickRange / 2),
+                tickLower: _currentJuiceboxPriceTick - (tickRange / 2),
+                tickUpper: _currentJuiceboxPriceTick + (tickRange / 2),
                 amount0Desired: amount0,
                 amount1Desired: amount1,
                 amount0Min: 0,
@@ -260,35 +273,47 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         tokenIdForPool[_pool] = tokenId;
     }
 
-    /// @dev Sort tokens because INonfungiblePositionManager.createAndInitializePoolIfNecessary does not do it for us
+    /**
+    * @notice Sort input tokens in order expected by `INonfungiblePositionManager.createAndInitializePoolIfNecessary`
+    */
     function _sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
         return tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
     }
 
+    /**
+    * @notice Computes maximum possible UniswapV3 addLiquidity amounts - as permitted by tokens held by this contract - that reflect the current JuiceboxV4 price
+    * @param _projectId JuiceboxV4 projectId
+    * @param _projectToken Project token
+    * @param _terminalToken Terminal token
+    * @return token0Amount Amount of token0 (as per UniswapV3 token ordering) for addLiquidity operation
+    * @return token1Amount Amount of token1 (as per UniswapV3 token ordering) for addLiquidity operation
+    */
     function _getAddLiquidityAmounts(
         uint256 _projectId,
         address _terminalToken,
         address _projectToken
     ) internal returns (uint256 token0Amount, uint256 token1Amount) {
-        uint256 terminalTokenBalance = IERC20(_terminalToken).balanceOf(address(this));
         uint256 projectTokenBalance = IERC20(_projectToken).balanceOf(address(this));
-        uint256 terminalTokenBalanceToProjectToken = _getProjectTokensOutForTerminalTokensIn(_projectId, _terminalToken, terminalTokenBalance);
+        uint256 terminalTokenBalance = IERC20(_terminalToken).balanceOf(address(this));
+        uint256 terminalTokenBalanceInProjectTokenDenomination = _getProjectTokensOutForTerminalTokensIn(_projectId, _terminalToken, terminalTokenBalance);
         (address token0, address token1) = _sortTokens(_terminalToken, _projectToken);
-        // terminalToken is the limiting amount
-        if (terminalTokenBalanceToProjectToken <= projectTokenBalance) {
-            return _terminalToken == token0 ? (terminalTokenBalance, terminalTokenBalanceToProjectToken) : (terminalTokenBalanceToProjectToken, terminalTokenBalance);
-        // projectToken is the limiting amount
+        if (terminalTokenBalanceInProjectTokenDenomination <= projectTokenBalance) {
+            // terminalToken is the limiting amount
+            return _terminalToken == token0 ? (terminalTokenBalance, terminalTokenBalanceInProjectTokenDenomination) : (terminalTokenBalanceInProjectTokenDenomination, terminalTokenBalance);
         } else {
-            uint256 terminalTokenDownScaled = terminalTokenBalance * projectTokenBalance / terminalTokenBalanceToProjectToken;
-            return _terminalToken == token0 ? (terminalTokenDownScaled, projectTokenBalance) : (projectTokenBalance, terminalTokenDownScaled);
+            // projectToken is the limiting amount
+            uint256 terminalTokenAmountForAddLiquidity = terminalTokenBalance * projectTokenBalance / terminalTokenBalanceInProjectTokenDenomination;
+            return _terminalToken == token0 ? (terminalTokenAmountForAddLiquidity, projectTokenBalance) : (projectTokenBalance, terminalTokenAmountForAddLiquidity);
         }
     }
 
-    /// @dev `sqrtPriceX96 = sqrt(token1/token0) * (2 ** 96)`
-    /// @dev price = token1/token0 = What amount of token1 has equivalent value to 1 token0
-    /// @dev See https://ethereum.stackexchange.com/questions/98685/computing-the-uniswap-v3-pair-price-from-q64-96-number
-    /// @dev Also see https://blog.uniswap.org/uniswap-v3-math-primer
-    function _getSqrtPriceX96ForCurrentJBRulesetPrice(
+    /**
+    * @notice Compute UniswapV3 SqrtPriceX96 for current JuiceboxV4 price
+    * @param _projectId JuiceboxV4 projectId
+    * @param _projectToken Project token
+    * @param _terminalToken Terminal token
+    */
+    function _getSqrtPriceX96ForCurrentJuiceboxPrice(
         uint256 _projectId,
         address _terminalToken,
         address _projectToken
@@ -302,10 +327,20 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         } else {
             token1Amount = _getTerminalTokensOutForProjectTokensIn(_projectId, _terminalToken, token0Amount);
         }
+        /// @dev `sqrtPriceX96 = sqrt(token1/token0) * (2 ** 96)`
+        /// @dev price = token1/token0 = What amount of token1 has equivalent value to 1 token0
+        /// @dev See https://ethereum.stackexchange.com/questions/98685/computing-the-uniswap-v3-pair-price-from-q64-96-number
+        /// @dev Also see https://blog.uniswap.org/uniswap-v3-math-primer
         return uint160(mulDiv(sqrt(token1Amount), 2**96,sqrt(token0Amount)));
     }
 
-    /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
+    /**
+    * @notice For given terminalToken amount, compute equivalent projectToken amount at current JuiceboxV4 price
+    * @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
+    * @param _projectId JuiceboxV4 projectId
+    * @param _terminalToken Terminal token
+    * @param projectTokenOutAmount projectToken out amount
+    */
     function _getProjectTokensOutForTerminalTokensIn(
         uint256 _projectId, 
         address _terminalToken,
@@ -314,7 +349,6 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
         JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
         uint32 baseCurrency = ruleset.baseCurrency();
-
         uint256 weightRatio = context.currency == baseCurrency
             ? 10 ** context.decimals
             : IJBPrices(jbPrices).pricePerUnitOf({
@@ -323,11 +357,16 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                 unitCurrency: baseCurrency,
                 decimals: context.decimals
             });
-
         projectTokenOutAmount = mulDiv(_terminalTokenInAmount, ruleset.weight, weightRatio);
     }
 
-    /// @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
+    /**
+    * @notice For given projectToken amount, compute equivalent terminalToken amount at current JuiceboxV4 price
+    * @dev Use pricing logic in JBTerminalStore.recordPaymentFrom()
+    * @param _projectId JuiceboxV4 projectId
+    * @param _terminalToken Terminal token
+    * @param terminalTokenOutAmount terminalToken out amount
+    */
     function _getTerminalTokensOutForProjectTokensIn(
         uint256 _projectId, 
         address _terminalToken, 
@@ -336,7 +375,6 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         JBRuleset memory ruleset = IJBRulesets(jbRulesets).currentOf(_projectId);
         JBAccountingContext memory context = IJBMultiTerminal(jbMultiTerminal).accountingContextForTokenOf(_projectId, _terminalToken);
         uint32 baseCurrency = ruleset.baseCurrency();
-
         uint256 weightRatio = context.currency == baseCurrency
             ? 10 ** context.decimals
             : IJBPrices(jbPrices).pricePerUnitOf({
@@ -345,7 +383,6 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                 unitCurrency: baseCurrency,
                 decimals: context.decimals
             });
-        
         terminalTokenOutAmount = mulDiv(_projectTokenInAmount, weightRatio, ruleset.weight);
     }
 
@@ -354,25 +391,3 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     // TODO - Protected withdraw LP function (with flag to withdraw directly into specified token)
     // TODO - Protected withdraw token function
 }
-
-/**
-    JBSplitHookContext fields
-    ---
-    address token; Token sent to split hook
-    uint256 amount; Amount sent to split hook
-    uint256 decimals;
-    uint256 projectId; 
-    uint256 groupId; '1' for reserved token, `uint256(uint160(tokenAddress))` for payouts
-    JBSplit split;
- */
-
-/**
-    JBSplit fields
-    ---
-    uint32 percent; % of total token amount that split sends
-    uint64 projectId;
-    address payable beneficiary;
-    bool preferAddToBalance; If split were to 'pay' a project through its terminal, indicate if use `addToBalance`
-    uint48 lockedUntil; Split cannot be changed until this timestamp, can be increased while a split is locked
-    IJBSplitHook hook; The hook contract
- */
