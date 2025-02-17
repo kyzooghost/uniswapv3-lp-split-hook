@@ -9,6 +9,7 @@ import { IJBRulesets } from "@bananapus/core/interfaces/IJBRulesets.sol";
 import { IJBSplitHook } from "@bananapus/core/interfaces/IJBSplitHook.sol";
 import { IJBTerminal } from "@bananapus/core/interfaces/IJBTerminal.sol";
 import { IJBTerminalStore } from "@bananapus/core/interfaces/IJBTerminalStore.sol";
+import { IJBTokens } from "@bananapus/core/interfaces/IJBTokens.sol";
 import { JBAccountingContext } from "@bananapus/core/structs/JBAccountingContext.sol";
 import { JBRuleset } from "@bananapus/core/structs/JBRuleset.sol";
 import { JBRulesetMetadataResolver } from "@bananapus/core/libraries/JBRulesetMetadataResolver.sol";
@@ -39,85 +40,66 @@ import { IUniswapV3LPSplitHook } from "./interfaces/IUniswapV3LPSplitHook.sol";
 contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     using JBRulesetMetadataResolver for JBRuleset;
 
-    /// @dev JBMultiTerminal (used to find JBDirectory and JBTokens)
+    /// @notice JBMultiTerminal (used to find JBDirectory and JBTokens)
     /// @dev We assume there a single instance of this contract
     address public immutable jbMultiTerminal;
 
-    /// @dev JBDirectory (to find important control contracts for given projectId)
+    /// @notice JBDirectory (to find important control contracts for given projectId)
     address public immutable jbDirectory;
 
-    /// @dev JBTokens (to find project tokens)
+    /// @notice JBTokens (to find project tokens)
     address public immutable jbTokens;
 
-    /// @dev JBRulesets (Stores and manages project rulesets)
+    /// @notice JBRulesets (Stores and manages project rulesets)
     address public immutable jbRulesets;
 
-    /// @dev JBTerminalStore (Stores and manages terminal data)
+    /// @notice JBTerminalStore (Stores and manages terminal data)
     address public immutable jbTerminalStore;
 
-    /// @dev JBPrices (Price feeds)
+    /// @notice JBPrices (Price feeds)
     address public immutable jbPrices;
 
-    /// @dev wETH address
-    address public immutable weth;
-
-    /// @dev UniswapV3Factory address
+    /// @notice UniswapV3Factory address
     address public immutable uniswapV3Factory;
 
-    /// @dev UniswapV3 NonFungiblePositionManager address
+    /// @notice UniswapV3 NonFungiblePositionManager address
     address public immutable uniswapV3NonfungiblePositionManager;
 
-    /// @dev Single immutable 'fee' value for all created UniswapV3 pools.
+    /// @notice Single immutable 'fee' value for all created UniswapV3 pools.
     uint24 public immutable uniswapPoolFee;
 
-    /// @dev Max variance tolerated between current pool LP tick, and current JuiceBox ruleset price
-    /// @dev If value is exceeded, then this contract will burn current liquidity and create a new LP position at the current JuiceBox ruleset price
-    int24 public immutable maxTickVarianceFromCurrentRulesetPrice;
-
-    /// @dev Tick range to use for UniswapV3 LP position
+    /// @notice Tick range to use for UniswapV3 LP position
+    /// @dev Liquidity positions will be created with `lowerTick = currentJbRulsetPrice - tickRange / 2` and `upperTick = currentJbRulsetPrice + tickRange / 2`
     int24 public immutable tickRange;
 
     /// @notice ProjectID => Terminal token => UniswapV3 terminalToken/projectToken pool address
-    /// @dev One project has one projectToken, but can have many terminalTokens
-    /// @dev The project accepts terminalTokens for payment, and rewards projectTokens
+    /// @dev One project has one projectToken (distributed by project)
+    /// @dev One project can have many terminalTokens (accepted for terminal payment)
     mapping(uint256 projectId => mapping(address terminalToken => address pool)) public poolOf;
 
-    /// @notice UniswapV3 pool => NonfungiblePosition TokenId representing LP
+    /// @notice UniswapV3 pool => NonfungiblePositionManager tokenId
     /// @dev The contract will only control a single position for a given pool
-    mapping(address pool => uint256 poolPositionTokenId) public poolPositionTokenIdOf;
-
-    /// @notice ProjectID => Project token
-    mapping(uint256 projectId => address projectToken) public projectTokenOf;
-
-    /// @notice ProjectID => Default terminal token
-    /// @dev Default terminal token defined from the first list element of IJBMultiTerminal.accountingContextsOf()
-    /// @dev We assume that the list returned by IJBMultiTerminal.accountingContextsOf() is append-only, and is never re-ordered
-    mapping(uint256 projectId => address defaultTerminalToken) public defaultTerminalTokenOf;
+    mapping(address pool => uint256 tokenId) public tokenIdForPool;
 
     /**
-    * @param _initialOwner Initial admin of the contract
+    * @param _initialOwner Initial owner/admin of the contract
     * @param _jbMultiTerminal JBMultiTerminal address
-    * @param _weth wETH address
     * @param _uniswapV3Factory UniswapV3Factory address
     * @param _uniswapV3NonfungiblePositionManager UniswapV3 NonfungiblePositionManager address
     * @param _uniswapPoolFee Uniswap pool fee (cannot be changed after deployment)
-    * @param _maxTickVarianceFromCurrentRulesetPrice Max tolerated variance between LP tick and current JB ruleset price (cannot be changed after deployment)
     * @param _tickRange Uniswap LP tick range (cannot be changed after deployment)
     */
     constructor(
         address _initialOwner,
         address _jbMultiTerminal,
-        address _weth,
         address _uniswapV3Factory,
         address _uniswapV3NonfungiblePositionManager,
         uint24 _uniswapPoolFee,
-        int24 _maxTickVarianceFromCurrentRulesetPrice,
         int24 _tickRange
     ) 
         Ownable(_initialOwner)
     {
         if (_jbMultiTerminal == address(0)) revert ZeroAddressNotAllowed();
-        if (_weth == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3Factory == address(0)) revert ZeroAddressNotAllowed();
         if (_uniswapV3NonfungiblePositionManager == address(0)) revert ZeroAddressNotAllowed();
         address _jbDirectory = address(IJBMultiTerminal(_jbMultiTerminal).DIRECTORY());
@@ -132,7 +114,6 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         if (_jbPrices == address(0)) revert ZeroAddressNotAllowed();
 
         // TODO - Input validation of _uniswapPoolFee
-        // TODO - Input validation of _maxTickVarianceFromCurrentRulesetPrice
         // TODO - Input validation of _tickRange
 
         jbMultiTerminal = _jbMultiTerminal;
@@ -142,62 +123,63 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         jbTerminalStore = _jbTerminalStore;
         jbPrices = _jbPrices;
 
-        weth = _weth;
         uniswapV3Factory = _uniswapV3Factory;
         uniswapV3NonfungiblePositionManager = _uniswapV3NonfungiblePositionManager;
         uniswapPoolFee = _uniswapPoolFee;
-        maxTickVarianceFromCurrentRulesetPrice = _maxTickVarianceFromCurrentRulesetPrice;
         tickRange = _tickRange;
     }
 
-    /// @dev Tokens are optimistically transferred to this split hook contract
-    /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
+    /**
+    * @notice As per ERC-165 to declare supported interfaces
+    * @param _interfaceId Interface ID as specified by `type(interface).interfaceId`
+    */
+    function supportsInterface(bytes4 _interfaceId) public pure override returns (bool) {
+        return _interfaceId == type(IUniswapV3LPSplitHook).interfaceId
+            || _interfaceId == type(IJBSplitHook).interfaceId;
+    }
+
+    /**
+    * @notice IJbSplitHook function called by JuiceBoxV4 terminal/controller when sending funds to designated split hook contract.
+    * @dev Tokens are optimistically transferred to this split hook contract
+    * @param _context Contextual data passed by JuiceBoxV4 terminal/controller
+    */
     function processSplitWith(JBSplitHookContext calldata _context) external payable {
         if (address(_context.split.hook) != address(this)) revert NotHookSpecifiedInContext();
-
-        // Validate that msg.sender == Terminal or Controller as per the Directory
+        // Validate that msg.sender is a JuiceBoxV4 Terminal or Controller (using Directory as the source of truth)
         address controller = address(IJBDirectory(jbDirectory).controllerOf(_context.projectId));
         if (controller == address(0)) revert InvalidProjectId();
         if (controller != msg.sender && !IJBDirectory(jbDirectory).isTerminalOf(_context.projectId, IJBTerminal(msg.sender))) revert SplitSenderNotValidControllerOrTerminal();
+        /// @dev Key trust assumption: If the sender is a verified Terminal or Controller, then we can trust the remaining fields in the _context
 
-        // Key trust assumption - If the sender is a verified Terminal or Controller, then we can trust the remaining fields in the _context
-
-        // Reserve split, received project tokens
-        if (_context.groupId == 1) _processSplitWithProjectToken(_context);
-        // Payout split, received terminal tokens
-        else _processSplitWithTerminalToken(_context);
-
+        address projectToken;
+        address terminalToken;
+        if (_context.groupId == 1) {
+            // Reserve split, received project tokens
+            projectToken = _context.token;
+            // Assume that first element of 'accountingContextsOf' represents the default terminal token
+            // TO DISCUSS - We could save up to 2600 gas ('CALL' for cold address) after the first query for a project by caching in a storage mapping.
+            terminalToken = IJBMultiTerminal(jbMultiTerminal).accountingContextsOf(_context.projectId)[0].token;
+        } else {
+            // Payout split, received terminal tokens
+            projectToken = address(IJBTokens(jbTokens).tokenOf(_context.projectId));
+            terminalToken = _context.token;
+        }
+        
+        address pool = poolOf[_context.projectId][terminalToken];
+        if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, projectToken, terminalToken);
+        _rebalanceUniswapV3Pool(_context.projectId, projectToken, terminalToken, pool);
         // TODO Emit event
     }
 
-    /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
-    function _processSplitWithProjectToken(JBSplitHookContext calldata _context) internal {
-        address defaultTerminalToken = defaultTerminalTokenOf[_context.projectId];
-        if (defaultTerminalToken == address(0)) {
-            // Assume that first element of 'accountingContextsOf' contains the default terminal token
-            defaultTerminalToken = IJBMultiTerminal(jbMultiTerminal).accountingContextsOf(_context.projectId)[0].token;
-        }
-        address pool = poolOf[_context.projectId][defaultTerminalToken];
-        if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, _context.token, defaultTerminalToken);
-        _rebalanceUniswapV3Pool(_context.projectId, _context.token, defaultTerminalToken, pool);
-    }
-    
-    /// @param _context The context passed by the JuiceBox terminal/controller to the split hook as a `JBSplitHookContext` struct:
-    function _processSplitWithTerminalToken(JBSplitHookContext calldata _context) internal {
-        // TODO Get projectToken from projectId
-        address projectToken;
-
-        address pool = poolOf[_context.projectId][_context.token];
-        if (pool == address(0)) _createAndInitializeUniswapV3Pool(_context, projectToken, _context.token);
-        _rebalanceUniswapV3Pool(_context.projectId, projectToken, _context.token, pool);
-
-    }
-
+    /**
+    * @notice Create and initialize UniswapV3 pool
+    * @param _context Contextual data passed by JuiceBoxV4 terminal/controller
+    * @param _projectToken Project token
+    * @param _terminalToken Terminal token
+    */
     function _createAndInitializeUniswapV3Pool(JBSplitHookContext calldata _context, address _projectToken, address _terminalToken) internal {
-        // TODO Initialize pool price - cast JB price to uint160 sqrtPriceX96
         (address token0, address token1) = _sortTokens(_projectToken, _terminalToken);
         uint160 sqrtPriceX96 = _getSqrtPriceX96ForCurrentJBRulesetPrice(_context.projectId, _projectToken, _terminalToken);
-        // Create new UniswapV3 pool
         address newPool = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).createAndInitializePoolIfNecessary(token0, token1, uniswapPoolFee, sqrtPriceX96);
         poolOf[_context.projectId][_terminalToken] = newPool;
         // TODO - Emit event
@@ -209,7 +191,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         address _terminalToken,
         address _pool
     ) internal {
-        uint256 tokenId = poolPositionTokenIdOf[_pool];
+        uint256 tokenId = tokenIdForPool[_pool];
         int24 currentRulesetTick = TickMath.getTickAtSqrtRatio(_getSqrtPriceX96ForCurrentJBRulesetPrice(_projectId, _projectToken, _terminalToken));
         // No current position, mint and add liquidity
         if (tokenId == 0) {
@@ -274,7 +256,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
                 recipient: address(this),
                 deadline: block.timestamp
         }));
-        poolPositionTokenIdOf[_pool] = tokenId;
+        tokenIdForPool[_pool] = tokenId;
     }
 
     /// @dev Sort tokens because INonfungiblePositionManager.createAndInitializePoolIfNecessary does not do it for us
@@ -370,11 +352,6 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
     // TODO - Collect LP fees (given projectId, terminalToken)
     // TODO - Protected withdraw LP function (with flag to withdraw directly into specified token)
     // TODO - Protected withdraw token function
-
-    function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {
-        return interfaceId == type(IUniswapV3LPSplitHook).interfaceId
-            || interfaceId == type(IJBSplitHook).interfaceId;
-    }
 }
 
 /**
