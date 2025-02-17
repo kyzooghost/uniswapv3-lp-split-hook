@@ -185,6 +185,7 @@ contract UniswapV3LPSplitHook is IUniswapV3LPSplitHook, IJBSplitHook, Ownable {
         // TODO - Emit event
     }
 
+    // TODO - Better name, reflecting that we add all max liquidity possible and burn stale position if needed
     function _rebalanceUniswapV3Pool(
         uint256 _projectId, 
         address _projectToken,
