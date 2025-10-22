@@ -185,11 +185,11 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         if (controller == address(0)) return 0;
         
         // Get all rulesets sorted from latest to earliest
-        JBRulesetWithMetadata[] memory rulesets = IJBController(controller).allRulesetsOf(_projectId, 0, 10);
+        JBRulesetWithMetadata[] memory rulesets = IJBController(controller).allRulesetsOf(_projectId, 0, 1);
         
-        // The last element in the array is the first ever ruleset
+        // The first element in the array is the first ever ruleset
         if (rulesets.length > 0) {
-            return rulesets[rulesets.length - 1].ruleset.weight;
+            return rulesets[0].ruleset.weight;
         }
         
         return 0;
@@ -214,7 +214,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         
         // Find the latest ruleset with weight >= 0.1x first weight
         // Since weight decreases over time, we iterate from most recent to oldest
-        for (uint256 i = 0; i < rulesets.length; i++) {
+        for (uint256 i = rulesets.length - 1; i >= 0; i--) {
             if (rulesets[i].ruleset.weight >= threshold) {
                 return rulesets[i].ruleset.weight;
             }
@@ -305,30 +305,31 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         uint256 tokenId = tokenIdForPool[pool];
         if (tokenId == 0) revert InvalidStageForAction();
         
-        // Collect fees from the LP position
+        // Collect fees from the LP position (only terminal tokens)
+        address projectToken = address(IJBTokens(jbTokens).tokenOf(_projectId));
+        (address token0, address token1) = _sortTokens(projectToken, _terminalToken);
+        
+        // Set max amounts based on which token is the terminal token
+        uint128 maxTerminalTokenAmount = type(uint128).max;
+        uint128 maxProjectTokenAmount = 0; // Don't collect project token fees
+        
         (uint256 amount0, uint256 amount1) = INonfungiblePositionManager(uniswapV3NonfungiblePositionManager).collect(
             INonfungiblePositionManager.CollectParams({
                 tokenId: tokenId,
                 recipient: address(this),
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
+                amount0Max: token0 == _terminalToken ? maxTerminalTokenAmount : maxProjectTokenAmount,
+                amount1Max: token1 == _terminalToken ? maxTerminalTokenAmount : maxProjectTokenAmount
             })
         );
         
-        // Route fees back to the project via addToBalance
-        address projectToken = address(IJBTokens(jbTokens).tokenOf(_projectId));
-        (address token0, address token1) = _sortTokens(projectToken, _terminalToken);
-        
-        if (amount0 > 0) {
-            address token = token0 == projectToken ? projectToken : _terminalToken;
-            uint256 amount = token0 == projectToken ? amount0 : amount1;
-            _routeFeesToProject(_projectId, token, amount);
+        // Route fees back to the project via addToBalance (only terminal tokens)
+        // Since we set maxProjectTokenAmount = 0, we should only have terminal token fees
+        if (amount0 > 0 && token0 == _terminalToken) {
+            _routeFeesToProject(_projectId, _terminalToken, amount0);
         }
         
-        if (amount1 > 0) {
-            address token = token1 == projectToken ? projectToken : _terminalToken;
-            uint256 amount = token1 == projectToken ? amount1 : amount0;
-            _routeFeesToProject(_projectId, token, amount);
+        if (amount1 > 0 && token1 == _terminalToken) {
+            _routeFeesToProject(_projectId, _terminalToken, amount1);
         }
     }
 
@@ -382,7 +383,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
                     address(this),
                     _projectId,
                     projectTokenBalance,
-                    "Deployment stage: Burning additional reserved tokens"
+                    "Burning additional tokens"
                 );
                 emit TokensBurned(_projectId, _projectToken, projectTokenBalance);
             }
