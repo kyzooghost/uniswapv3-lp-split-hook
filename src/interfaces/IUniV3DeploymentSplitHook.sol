@@ -8,32 +8,6 @@ pragma solidity ^0.8.0;
  * Stage 2: Deploy pool with accumulated tokens and route LP fees back to project
  */
 interface IUniV3DeploymentSplitHook {
-    /// @dev Thrown when a parameter is the zero address.
-    error ZeroAddressNotAllowed();
-
-    /// @dev Thrown when a projectId does not exist in the JBDirectory
-    error InvalidProjectId();
-
-    /// @dev Thrown when `processSplitWith` is called and this contract is not the hook specified in the JBSplitHookContext
-    error NotHookSpecifiedInContext();
-
-    /// @dev Thrown when `processSplitWith` is not called by the project's controller
-    error SplitSenderNotValidControllerOrTerminal();
-
-    /// @dev Thrown when trying to deploy pool but no tokens have been accumulated
-    error NoTokensAccumulated();
-
-    /// @dev Thrown when trying to perform an action that's not allowed in the current stage
-    error InvalidStageForAction();
-
-    /// @dev Thrown when the split hook receives terminal tokens from payouts (should only receive reserved tokens)
-    error TerminalTokensNotAllowed();
-
-    /// @dev Thrown when fee percent exceeds 100% (10000 basis points)
-    error InvalidFeePercent();
-
-    /// @dev Thrown when trying to claim tokens for a non-revnet operator
-    error UnauthorizedBeneficiary();
 
     /// @dev Emitted when a project transitions from Stage 1 to Stage 2
     event ProjectDeployed(uint256 indexed projectId, address indexed terminalToken, address indexed pool);
