@@ -13,10 +13,23 @@ interface IUniV3DeploymentSplitHook {
     event ProjectDeployed(uint256 indexed projectId, address indexed terminalToken, address indexed pool);
 
     /// @dev Emitted when LP fees are routed back to the project
-    event LPFeesRouted(uint256 indexed projectId, address indexed terminalToken, uint256 amount);
+    /// @param feeAmount Amount sent to fee project
+    /// @param remainingAmount Amount sent to original project
+    /// @param feeTokensMinted Number of fee project tokens minted
+    event LPFeesRouted(
+        uint256 indexed projectId,
+        address indexed terminalToken,
+        uint256 totalAmount,
+        uint256 feeAmount,
+        uint256 remainingAmount,
+        uint256 feeTokensMinted
+    );
 
     /// @dev Emitted when tokens are burned in Stage 2
     event TokensBurned(uint256 indexed projectId, address indexed token, uint256 amount);
+
+    /// @dev Emitted when fee tokens are claimed by a revnet operator
+    event FeeTokensClaimed(uint256 indexed projectId, address indexed beneficiary, uint256 amount);
 
     /**
      * @notice Check if project is in accumulation stage based on ruleset weight
