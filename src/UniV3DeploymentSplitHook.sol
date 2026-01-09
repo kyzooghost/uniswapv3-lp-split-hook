@@ -97,6 +97,9 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @notice Uniswap V3 pool fee (10000 = 1% fee tier)
     uint24 public constant UNISWAP_V3_POOL_FEE = 10000;
 
+    /// @notice Tick spacing for 1% fee tier (200 ticks)
+    int24 public constant TICK_SPACING = 200;
+
     //*********************************************************************//
     // --------------- public immutable stored properties ---------------- //
     //*********************************************************************//
@@ -587,9 +590,6 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         
         // Collect fees from the LP position (both terminal tokens and project tokens)
         address projectToken = address(IJBTokens(TOKENS).tokenOf(projectId));
-        // Convert native ETH to WETH for Uniswap operations
-        address uniswapTerminalToken = _toUniswapToken(terminalToken);
-        (address token0, address token1) = _sortTokens(projectToken, uniswapTerminalToken);
         
         // Set max amounts to collect all fees for both tokens
         uint128 maxAmount = type(uint128).max;
@@ -604,18 +604,10 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         );
         
         // Route terminal token fees back to the project via addToBalance
-        // Convert native ETH to WETH for comparison since Uniswap returns WETH
-        address uniswapTerminalToken = _toUniswapToken(terminalToken);
-        if (amount0 > 0 && token0 == uniswapTerminalToken) {
-            _routeFeesToProject(projectId, terminalToken, amount0);
-        }
-        
-        if (amount1 > 0 && token1 == uniswapTerminalToken) {
-            _routeFeesToProject(projectId, terminalToken, amount1);
-        }
+        _routeCollectedFees(projectId, projectToken, terminalToken, amount0, amount1);
         
         // Burn collected project token fees to maintain token economics
-        _burnReceivedTokens(projectId, projectToken, terminalToken);
+        _burnReceivedTokens(projectId, projectToken);
     }
 
     /// @notice Manually trigger deployment for a project (only works in accumulation stage)
@@ -670,18 +662,12 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         );
         
         // Route fees if terminal tokens were collected
-        // Convert native ETH to WETH for Uniswap operations
-        address uniswapTerminalToken = _toUniswapToken(terminalToken);
-        (address token0, address token1) = _sortTokens(projectToken, uniswapTerminalToken);
-        // Compare with uniswapTerminalToken (WETH) since that's what Uniswap returns
-        if (amount0 > 0 && token0 == uniswapTerminalToken) {
-            _routeFeesToProject(projectId, terminalToken, amount0);
-        }
-        if (amount1 > 0 && token1 == uniswapTerminalToken) {
-            _routeFeesToProject(projectId, terminalToken, amount1);
-        }
+        _routeCollectedFees(projectId, projectToken, terminalToken, amount0, amount1);
         
         // Decrease liquidity to zero (removes all liquidity)
+        // Note: amount0Min/amount1Min are set to 0 to accept any execution outcome
+        // This is acceptable for rebalancing operations where we want to ensure liquidity is removed
+        // even if prices have moved unfavorably, as we will immediately re-add liquidity at new rates
         if (liquidity > 0) {
             INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).decreaseLiquidity(
                 INonfungiblePositionManager.DecreaseLiquidityParams({
@@ -710,25 +696,8 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
             ? IERC20(terminalToken).balanceOf(address(this))
             : address(this).balance;
         
-        // Calculate new tick bounds based on current rates
-        int24 tickLower = TickMath.getTickAtSqrtRatio(_getCashOutRateSqrtPriceX96(projectId, terminalToken, projectToken));
-        int24 tickUpper = TickMath.getTickAtSqrtRatio(_getIssuanceRateSqrtPriceX96(projectId, terminalToken, projectToken));
-        
-        // Enforce tick spacing for 1% fee tier (200 tick spacing)
-        // Ticks must be multiples of the tick spacing to be valid
-        int24 tickSpacing = 200; // For 1% fee tier (UNISWAP_V3_POOL_FEE = 10000)
-        tickLower = (tickLower / tickSpacing) * tickSpacing;
-        tickUpper = (tickUpper / tickSpacing) * tickSpacing;
-        
-        // Ensure tickLower < tickUpper
-        if (tickLower >= tickUpper) {
-            // If rates are inverted, use a small range around the current price
-            uint160 currentSqrtPrice = _getSqrtPriceX96ForCurrentJuiceboxPrice(projectId, terminalToken, projectToken);
-            int24 currentTick = TickMath.getTickAtSqrtRatio(currentSqrtPrice);
-            currentTick = (currentTick / tickSpacing) * tickSpacing; // Align to tick spacing
-            tickLower = currentTick - tickSpacing; // One tick spacing below
-            tickUpper = currentTick + tickSpacing; // One tick spacing above
-        }
+        // Calculate and align tick bounds based on current rates
+        (int24 tickLower, int24 tickUpper) = _calculateTickBounds(projectId, terminalToken, projectToken);
         
         // Since tick bounds may have changed, we need to remove the old position and create a new one
         // First, burn the old NFT (this removes the position completely)
@@ -766,6 +735,9 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
                     tickUpper: tickUpper, // Price ceiling: issuance rate
                     amount0Desired: amount0Desired,
                     amount1Desired: amount1Desired,
+                    // Note: amount0Min/amount1Min are set to 0 to accept any execution outcome
+                    // This allows liquidity provision even with small price movements, and leftover tokens
+                    // are re-accumulated for future operations. For production, consider adding slippage protection.
                     amount0Min: 0,
                     amount1Min: 0,
                     recipient: address(this),
@@ -778,8 +750,16 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         uint256 amount0Leftover = amount0Desired > amount0Used ? amount0Desired - amount0Used : 0;
         uint256 amount1Leftover = amount1Desired > amount1Used ? amount1Desired - amount1Used : 0;
         
-        // Leftover tokens remain in the contract and will be available for future operations
-        // They are not lost but should be accounted for in future liquidity additions
+        // Handle leftover tokens: burn project tokens, add terminal tokens to project balance
+        _handleLeftoverTokens({
+            projectId: projectId,
+            projectToken: projectToken,
+            terminalToken: terminalToken,
+            token0: token0,
+            token1: token1,
+            amount0Leftover: amount0Leftover,
+            amount1Leftover: amount1Leftover
+        });
         
         // Update the tokenId mapping
         tokenIdForPool[pool] = newTokenId;
@@ -885,25 +865,8 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         address uniswapTerminalToken = _toUniswapToken(terminalToken);
         (address token0, address token1) = _sortTokens(projectToken, uniswapTerminalToken);
         
-        // Calculate tick bounds based on current issuance rate (ceiling) and cash out rate (floor)
-        int24 tickLower = TickMath.getTickAtSqrtRatio(_getCashOutRateSqrtPriceX96(projectId, terminalToken, projectToken));
-        int24 tickUpper = TickMath.getTickAtSqrtRatio(_getIssuanceRateSqrtPriceX96(projectId, terminalToken, projectToken));
-        
-        // Enforce tick spacing for 1% fee tier (200 tick spacing)
-        // Ticks must be multiples of the tick spacing to be valid
-        int24 tickSpacing = 200; // For 1% fee tier (UNISWAP_V3_POOL_FEE = 10000)
-        tickLower = (tickLower / tickSpacing) * tickSpacing;
-        tickUpper = (tickUpper / tickSpacing) * tickSpacing;
-        
-        // Ensure tickLower < tickUpper (cash out rate should be lower than issuance rate)
-        if (tickLower >= tickUpper) {
-            // If rates are inverted, use a small range around the current price
-            uint160 currentSqrtPrice = _getSqrtPriceX96ForCurrentJuiceboxPrice(projectId, terminalToken, projectToken);
-            int24 currentTick = TickMath.getTickAtSqrtRatio(currentSqrtPrice);
-            currentTick = (currentTick / tickSpacing) * tickSpacing; // Align to tick spacing
-            tickLower = currentTick - tickSpacing; // One tick spacing below
-            tickUpper = currentTick + tickSpacing; // One tick spacing above
-        }
+        // Calculate and align tick bounds based on current issuance rate (ceiling) and cash out rate (floor)
+        (int24 tickLower, int24 tickUpper) = _calculateTickBounds(projectId, terminalToken, projectToken);
         
         // Get the actual balances after cash out
         uint256 projectTokenAmount = IERC20(projectToken).balanceOf(address(this));
@@ -960,10 +923,16 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         uint256 amount0Leftover = amount0 > amount0Used ? amount0 - amount0Used : 0;
         uint256 amount1Leftover = amount1 > amount1Used ? amount1 - amount1Used : 0;
         
-        // Leftover tokens remain in the contract and will be available for future operations
-        // They are not lost but should be accounted for in future liquidity additions
-        // For project tokens, they will be burned in deployment stage
-        // For terminal tokens, they will be used in future liquidity additions
+        // Handle leftover tokens: burn project tokens, add terminal tokens to project balance
+        _handleLeftoverTokens({
+            projectId: projectId,
+            projectToken: projectToken,
+            terminalToken: terminalToken,
+            token0: token0,
+            token1: token1,
+            amount0Leftover: amount0Leftover,
+            amount1Leftover: amount1Leftover
+        });
         
         // Clear accumulated balances after successful LP creation
         accumulatedProjectTokens[projectId] = 0;
@@ -973,22 +942,11 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @dev In deployment stage, newly received project tokens are burned to maintain token economics
     /// @param projectId The Juicebox project ID
     /// @param projectToken The project token address
-    /// @param terminalToken The terminal token address (unused, kept for interface consistency)
-    function _burnReceivedTokens(uint256 projectId, address projectToken, address terminalToken) internal {
+    function _burnReceivedTokens(uint256 projectId, address projectToken) internal {
         // Burn any project tokens received using the controller
         uint256 projectTokenBalance = IERC20(projectToken).balanceOf(address(this));
         if (projectTokenBalance > 0) {
-            // Use the controller to burn project tokens
-            address controller = IJBDirectory(DIRECTORY).controllerOf(projectId);
-            if (controller != address(0)) {
-                IJBController(controller).burnTokensOf(
-                    address(this),
-                    projectId,
-                    projectTokenBalance,
-                    "Burning additional tokens"
-                );
-                emit TokensBurned(projectId, projectToken, projectTokenBalance);
-            }
+            _burnProjectTokens(projectId, projectToken, projectTokenBalance, "Burning additional tokens");
         }
     }
 
@@ -1048,7 +1006,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         }
         
         // Burn any newly received project tokens
-        _burnReceivedTokens(projectId, projectToken, terminalToken);
+        _burnReceivedTokens(projectId, projectToken);
     }
 
     /// @notice Route fees back to the project via addToBalance
@@ -1118,33 +1076,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         
         // Route remaining amount to original project
         if (remainingAmount > 0) {
-            address terminal = IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, token);
-            if (terminal != address(0)) {
-                if (_isNativeToken(terminalToken)) {
-                    // Native ETH - use addToBalanceOf with value
-                    // Note: This assumes the terminal's addToBalanceOf can handle native ETH via msg.value
-                    // If not, we may need to use a different approach or wrap back to WETH
-                    IJBMultiTerminal(terminal).addToBalanceOf{value: remainingAmount}(
-                        projectId,
-                        token,
-                        remainingAmount,
-                        false, // shouldReturnHeldFees
-                        "",
-                        ""
-                    );
-                } else {
-                    // ERC20 token
-                    IERC20(token).safeApprove(terminal, remainingAmount);
-                    IJBMultiTerminal(terminal).addToBalanceOf(
-                        projectId,
-                        token,
-                        remainingAmount,
-                        false, // shouldReturnHeldFees
-                        "",
-                        ""
-                    );
-                }
-            }
+            _addToProjectBalance(projectId, token, remainingAmount, _isNativeToken(terminalToken));
         }
         
         // Emit enhanced event with detailed fee split information
@@ -1172,6 +1104,188 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @return uniswapToken The token address to use for Uniswap operations (WETH if native ETH)
     function _toUniswapToken(address terminalToken) internal view returns (address uniswapToken) {
         return _isNativeToken(terminalToken) ? _getWETH() : terminalToken;
+    }
+
+    /// @notice Calculate tick bounds for liquidity position based on issuance and cash out rates
+    /// @dev Calculates ticks from sqrt prices, aligns to spacing, and handles inverted rates
+    /// @param projectId The Juicebox project ID
+    /// @param terminalToken The terminal token address
+    /// @param projectToken The project token address
+    /// @return tickLower The lower tick bound (aligned to spacing)
+    /// @return tickUpper The upper tick bound (aligned to spacing)
+    function _calculateTickBounds(
+        uint256 projectId,
+        address terminalToken,
+        address projectToken
+    ) internal view returns (int24 tickLower, int24 tickUpper) {
+        // Calculate tick bounds based on current issuance rate (ceiling) and cash out rate (floor)
+        tickLower = TickMath.getTickAtSqrtRatio(_getCashOutRateSqrtPriceX96(projectId, terminalToken, projectToken));
+        tickUpper = TickMath.getTickAtSqrtRatio(_getIssuanceRateSqrtPriceX96(projectId, terminalToken, projectToken));
+        
+        // Enforce tick spacing - use proper floor semantics to handle negative ticks correctly
+        tickLower = _alignTickToSpacing(tickLower, TICK_SPACING);
+        tickUpper = _alignTickToSpacing(tickUpper, TICK_SPACING);
+        
+        // Ensure tickLower < tickUpper
+        if (tickLower >= tickUpper) {
+            // If rates are inverted, use a small range around the current price
+            uint160 currentSqrtPrice = _getSqrtPriceX96ForCurrentJuiceboxPrice(projectId, terminalToken, projectToken);
+            int24 currentTick = TickMath.getTickAtSqrtRatio(currentSqrtPrice);
+            currentTick = _alignTickToSpacing(currentTick, TICK_SPACING);
+            tickLower = currentTick - TICK_SPACING; // One tick spacing below
+            tickUpper = currentTick + TICK_SPACING; // One tick spacing above
+        }
+    }
+
+    /// @notice Route collected fees from Uniswap position to project
+    /// @dev Determines which collected amounts correspond to terminal tokens and routes them
+    /// @param projectId The Juicebox project ID
+    /// @param projectToken The project token address
+    /// @param terminalToken The terminal token address
+    /// @param amount0 Collected amount of token0
+    /// @param amount1 Collected amount of token1
+    function _routeCollectedFees(
+        uint256 projectId,
+        address projectToken,
+        address terminalToken,
+        uint256 amount0,
+        uint256 amount1
+    ) internal {
+        if (amount0 == 0 && amount1 == 0) return;
+        
+        // Convert native ETH to WETH for Uniswap operations
+        address uniswapTerminalToken = _toUniswapToken(terminalToken);
+        (address token0, address token1) = _sortTokens(projectToken, uniswapTerminalToken);
+        
+        // Route fees if terminal tokens were collected
+        // Compare with uniswapTerminalToken (WETH) since that's what Uniswap returns
+        if (amount0 > 0 && token0 == uniswapTerminalToken) {
+            _routeFeesToProject(projectId, terminalToken, amount0);
+        }
+        if (amount1 > 0 && token1 == uniswapTerminalToken) {
+            _routeFeesToProject(projectId, terminalToken, amount1);
+        }
+    }
+
+    /// @notice Align tick to tick spacing using proper floor semantics for negative ticks
+    /// @dev Solidity division rounds toward zero, which breaks floor behavior for negative ticks
+    /// @dev For negative ticks, we need to subtract spacing if there's a remainder to get proper floor
+    /// @param tick The tick to align
+    /// @param spacing The tick spacing (200 for 1% fee tier)
+    /// @return alignedTick The tick aligned to spacing
+    function _alignTickToSpacing(int24 tick, int24 spacing) internal pure returns (int24 alignedTick) {
+        int24 rounded = (tick / spacing) * spacing;
+        // For negative ticks, if rounded > tick, we need to floor down further
+        if (tick < 0 && rounded > tick) {
+            rounded -= spacing;
+        }
+        return rounded;
+    }
+
+    /// @notice Burn project tokens using the controller
+    /// @param projectId The Juicebox project ID
+    /// @param projectToken The project token address
+    /// @param amount The amount of tokens to burn
+    /// @param memo Optional memo for the burn operation
+    function _burnProjectTokens(uint256 projectId, address projectToken, uint256 amount, string memory memo) internal {
+        if (amount == 0) return;
+        
+        address controller = IJBDirectory(DIRECTORY).controllerOf(projectId);
+        if (controller != address(0)) {
+            IJBController(controller).burnTokensOf(
+                address(this),
+                projectId,
+                amount,
+                memo
+            );
+            emit TokensBurned(projectId, projectToken, amount);
+        }
+    }
+
+    /// @notice Add tokens to project balance via terminal
+    /// @dev Handles both native ETH and ERC20 tokens
+    /// @param projectId The Juicebox project ID
+    /// @param token The token address (JBConstants.NATIVE_TOKEN for native ETH)
+    /// @param amount The amount to add
+    /// @param isNative Whether the token is native ETH
+    function _addToProjectBalance(uint256 projectId, address token, uint256 amount, bool isNative) internal {
+        if (amount == 0) return;
+        
+        address terminal = IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, token);
+        if (terminal == address(0)) return;
+        
+        // Approve ERC20 tokens before calling addToBalanceOf
+        if (!isNative) {
+            IERC20(token).safeApprove(terminal, amount);
+        }
+        
+        // Call addToBalanceOf once - send value for native ETH, 0 for ERC20
+        IJBMultiTerminal(terminal).addToBalanceOf{value: isNative ? amount : 0}(
+            projectId, token, amount, false, "", ""
+        );
+    }
+
+    /// @notice Handle leftover tokens after Uniswap V3 mint operation
+    /// @dev Burns leftover project tokens and adds leftover terminal tokens to project balance
+    /// @param projectId The Juicebox project ID
+    /// @param projectToken The project token address
+    /// @param terminalToken The terminal token address (JBConstants.NATIVE_TOKEN for native ETH)
+    /// @param token0 The first token in the Uniswap pair (sorted)
+    /// @param token1 The second token in the Uniswap pair (sorted)
+    /// @param amount0Leftover Leftover amount of token0
+    /// @param amount1Leftover Leftover amount of token1
+    function _handleLeftoverTokens(
+        uint256 projectId,
+        address projectToken,
+        address terminalToken,
+        address token0,
+        address token1,
+        uint256 amount0Leftover,
+        uint256 amount1Leftover
+    ) internal {
+        if (amount0Leftover == 0 && amount1Leftover == 0) return;
+        
+        // Determine which token is the project token and burn leftover project tokens
+        uint256 projectTokenLeftover = (projectToken == token0 && amount0Leftover > 0)
+            ? amount0Leftover
+            : ((projectToken == token1 && amount1Leftover > 0) ? amount1Leftover : 0);
+        
+        if (projectTokenLeftover > 0) {
+            _burnProjectTokens(projectId, projectToken, projectTokenLeftover, "Burning leftover project tokens");
+        }
+        
+        // Handle leftover terminal tokens - add to project balance
+        // Note: token0/token1 may be WETH if terminal token is native ETH
+        address uniswapTerminalToken = _toUniswapToken(terminalToken);
+        // Determine which leftover amount corresponds to the terminal token
+        uint256 terminalTokenLeftover = (projectToken == token0 && uniswapTerminalToken == token1 && amount1Leftover > 0)
+            ? amount1Leftover
+            : ((projectToken == token1 && uniswapTerminalToken == token0 && amount0Leftover > 0) ? amount0Leftover : 0);
+        
+        if (terminalTokenLeftover > 0) {
+            _addLeftoverTerminalTokensToBalance(projectId, terminalToken, terminalTokenLeftover);
+        }
+    }
+
+    /// @notice Add leftover terminal tokens to project balance
+    /// @dev Handles both native ETH (unwraps WETH) and ERC20 tokens
+    /// @param projectId The Juicebox project ID
+    /// @param terminalToken The terminal token address (JBConstants.NATIVE_TOKEN for native ETH)
+    /// @param amount The amount to add (in WETH if native ETH)
+    function _addLeftoverTerminalTokensToBalance(uint256 projectId, address terminalToken, uint256 amount) internal {
+        if (amount == 0) return;
+        
+        address token = terminalToken;
+        
+        // If terminal token is native ETH, Uniswap returns WETH - unwrap it to ETH
+        if (_isNativeToken(terminalToken)) {
+            // Unwrap WETH to ETH
+            INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).unwrapWETH9(amount, address(this));
+            // token is already JBConstants.NATIVE_TOKEN
+        }
+        
+        // Add to project balance via terminal
+        _addToProjectBalance(projectId, token, amount, _isNativeToken(terminalToken));
     }
 
     /// @notice Sort input tokens in order expected by `INonfungiblePositionManager.createAndInitializePoolIfNecessary`
