@@ -43,8 +43,15 @@ interface IUniV3DeploymentSplitHook {
      * @notice Manually trigger deployment for a project (only works in accumulation stage)
      * @param _projectId The Juicebox project ID
      * @param _terminalToken The terminal token address
+     * @param _amount0Min Minimum amount of token0 to add (slippage protection, defaults to 0)
+     * @param _amount1Min Minimum amount of token1 to add (slippage protection, defaults to 0)
      */
-    function deployPool(uint256 _projectId, address _terminalToken) external;
+    function deployPool(
+        uint256 _projectId,
+        address _terminalToken,
+        uint256 _amount0Min,
+        uint256 _amount1Min
+    ) external;
 
     /**
      * @notice Collect LP fees and route them back to the project

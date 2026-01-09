@@ -616,7 +616,14 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @dev This is safe because deployment can only occur in accumulation stage and uses accumulated tokens
     /// @param projectId The Juicebox project ID
     /// @param terminalToken The terminal token address
-    function deployPool(uint256 projectId, address terminalToken) external {
+    /// @param amount0Min Minimum amount of token0 to add (slippage protection, defaults to 0)
+    /// @param amount1Min Minimum amount of token1 to add (slippage protection, defaults to 0)
+    function deployPool(
+        uint256 projectId,
+        address terminalToken,
+        uint256 amount0Min,
+        uint256 amount1Min
+    ) external {
         if (!isAccumulationStage(projectId)) revert UniV3DeploymentSplitHook_InvalidStageForAction();
         
         address projectToken = address(IJBTokens(TOKENS).tokenOf(projectId));
@@ -625,7 +632,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         if (projectTokenBalance == 0) revert UniV3DeploymentSplitHook_NoTokensAccumulated();
         
         // Deploy the pool and add liquidity
-        _deployPoolAndAddLiquidity(projectId, projectToken, terminalToken);
+        _deployPoolAndAddLiquidity(projectId, projectToken, terminalToken, amount0Min, amount1Min);
         
         emit ProjectDeployed(projectId, terminalToken, poolOf[projectId][terminalToken]);
     }
@@ -636,7 +643,18 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @dev This is safe because it only rebalances existing positions and uses current rates
     /// @param projectId The Juicebox project ID
     /// @param terminalToken The terminal token address
-    function rebalanceLiquidity(uint256 projectId, address terminalToken) external {
+    /// @param decreaseAmount0Min Minimum amount of token0 when decreasing liquidity (slippage protection, defaults to 0)
+    /// @param decreaseAmount1Min Minimum amount of token1 when decreasing liquidity (slippage protection, defaults to 0)
+    /// @param increaseAmount0Min Minimum amount of token0 when adding liquidity (slippage protection, defaults to 0)
+    /// @param increaseAmount1Min Minimum amount of token1 when adding liquidity (slippage protection, defaults to 0)
+    function rebalanceLiquidity(
+        uint256 projectId,
+        address terminalToken,
+        uint256 decreaseAmount0Min,
+        uint256 decreaseAmount1Min,
+        uint256 increaseAmount0Min,
+        uint256 increaseAmount1Min
+    ) external {
         if (isAccumulationStage(projectId)) revert UniV3DeploymentSplitHook_InvalidStageForAction();
         
         address pool = poolOf[projectId][terminalToken];
@@ -665,16 +683,14 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         _routeCollectedFees(projectId, projectToken, terminalToken, amount0, amount1);
         
         // Decrease liquidity to zero (removes all liquidity)
-        // Note: amount0Min/amount1Min are set to 0 to accept any execution outcome
-        // This is acceptable for rebalancing operations where we want to ensure liquidity is removed
-        // even if prices have moved unfavorably, as we will immediately re-add liquidity at new rates
+        // Use caller-provided min amounts for slippage protection (defaults to 0)
         if (liquidity > 0) {
             INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).decreaseLiquidity(
                 INonfungiblePositionManager.DecreaseLiquidityParams({
                     tokenId: tokenId,
                     liquidity: liquidity,
-                    amount0Min: 0,
-                    amount1Min: 0,
+                    amount0Min: decreaseAmount0Min,
+                    amount1Min: decreaseAmount1Min,
                     deadline: block.timestamp
                 })
             );
@@ -725,6 +741,9 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         uint256 amount0Desired = projectToken == token0 ? projectTokenBalance : terminalTokenBalance;
         uint256 amount1Desired = projectToken == token1 ? projectTokenBalance : terminalTokenBalance;
         
+        // Min amounts are already in token0/token1 terms (caller provides them for sorted tokens)
+        // No mapping needed - increaseAmount0Min applies to token0, increaseAmount1Min applies to token1
+        
         (uint256 newTokenId,, uint256 amount0Used, uint256 amount1Used) = 
             INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).mint{value: _isNativeToken(terminalToken) ? terminalTokenBalance : 0}(
                 INonfungiblePositionManager.MintParams({
@@ -735,11 +754,8 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
                     tickUpper: tickUpper, // Price ceiling: issuance rate
                     amount0Desired: amount0Desired,
                     amount1Desired: amount1Desired,
-                    // Note: amount0Min/amount1Min are set to 0 to accept any execution outcome
-                    // This allows liquidity provision even with small price movements, and leftover tokens
-                    // are re-accumulated for future operations. For production, consider adding slippage protection.
-                    amount0Min: 0,
-                    amount1Min: 0,
+                    amount0Min: increaseAmount0Min,
+                    amount1Min: increaseAmount1Min,
                     recipient: address(this),
                     deadline: block.timestamp
                 })
@@ -833,7 +849,16 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @param projectToken Project token address
     /// @param terminalToken Terminal token address (JBConstants.NATIVE_TOKEN for native ETH)
     /// @param pool UniswapV3 pool address
-    function _addUniswapLiquidity(uint256 projectId, address projectToken, address terminalToken, address pool) internal {
+    /// @param amount0Min Minimum amount of token0 to add (slippage protection)
+    /// @param amount1Min Minimum amount of token1 to add (slippage protection)
+    function _addUniswapLiquidity(
+        uint256 projectId,
+        address projectToken,
+        address terminalToken,
+        address pool,
+        uint256 amount0Min,
+        uint256 amount1Min
+    ) internal {
         uint256 projectTokenBalance = accumulatedProjectTokens[projectId];
         
         if (projectTokenBalance == 0) return;
@@ -898,6 +923,9 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         uint256 amount0 = projectToken == token0 ? projectTokenAmount : terminalTokenAmount;
         uint256 amount1 = projectToken == token1 ? projectTokenAmount : terminalTokenAmount;
         
+        // Min amounts are already in token0/token1 terms (caller provides them for sorted tokens)
+        // No mapping needed - amount0Min applies to token0, amount1Min applies to token1
+        
         // Create liquidity position with tick bounds set to issuance rate (ceiling) and cash out rate (floor)
         // For native ETH, the mint function is payable and will handle wrapping to WETH
         (uint256 tokenId,, uint256 amount0Used, uint256 amount1Used) = 
@@ -910,8 +938,8 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
                     tickUpper: tickUpper, // Price ceiling: issuance rate
                     amount0Desired: amount0,
                     amount1Desired: amount1,
-                    amount0Min: 0,
-                    amount1Min: 0,
+                    amount0Min: amount0Min,
+                    amount1Min: amount1Min,
                     recipient: address(this),
                     deadline: block.timestamp
                 })
@@ -977,7 +1005,15 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @param projectId The Juicebox project ID
     /// @param projectToken The project token address
     /// @param terminalToken The terminal token address
-    function _deployPoolAndAddLiquidity(uint256 projectId, address projectToken, address terminalToken) internal {
+    /// @param amount0Min Minimum amount of token0 to add (slippage protection)
+    /// @param amount1Min Minimum amount of token1 to add (slippage protection)
+    function _deployPoolAndAddLiquidity(
+        uint256 projectId,
+        address projectToken,
+        address terminalToken,
+        uint256 amount0Min,
+        uint256 amount1Min
+    ) internal {
         // Create and initialize the pool if it doesn't exist
         address pool = poolOf[projectId][terminalToken];
         if (pool == address(0)) {
@@ -986,7 +1022,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         }
         
         // Add liquidity using accumulated tokens
-        _addUniswapLiquidity(projectId, projectToken, terminalToken, pool);
+        _addUniswapLiquidity(projectId, projectToken, terminalToken, pool, amount0Min, amount1Min);
     }
 
     /// @notice Handle deployment stage: deploy pool if not deployed, then burn newly received tokens
@@ -1000,7 +1036,8 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
             uint256 projectTokenBalance = accumulatedProjectTokens[projectId];
             
             if (projectTokenBalance > 0) {
-                _deployPoolAndAddLiquidity(projectId, projectToken, terminalToken);
+                // Use 0 as default min amounts for automatic deployment (no slippage protection)
+                _deployPoolAndAddLiquidity(projectId, projectToken, terminalToken, 0, 0);
                 emit ProjectDeployed(projectId, terminalToken, poolOf[projectId][terminalToken]);
             }
         }
