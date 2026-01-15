@@ -87,6 +87,9 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
     /// @dev Thrown when trying to claim tokens for a non-revnet operator
     error UniV3DeploymentSplitHook_UnauthorizedBeneficiary();
 
+    /// @dev Thrown when terminalToken is not a valid terminal token for the projectId
+    error UniV3DeploymentSplitHook_InvalidTerminalToken();
+
     //*********************************************************************//
     // ------------------------- public constants ------------------------ //
     //*********************************************************************//
@@ -631,6 +634,11 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         
         if (projectTokenBalance == 0) revert UniV3DeploymentSplitHook_NoTokensAccumulated();
         
+        // Validate that terminalToken is a valid terminal token for this projectId
+        // This prevents malicious actors from using another project's tokens as terminalToken
+        address terminal = IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken);
+        if (terminal == address(0)) revert UniV3DeploymentSplitHook_InvalidTerminalToken();
+        
         // Deploy the pool and add liquidity
         _deployPoolAndAddLiquidity(projectId, projectToken, terminalToken, amount0Min, amount1Min);
         
@@ -656,6 +664,10 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         uint256 increaseAmount1Min
     ) external {
         if (isAccumulationStage(projectId)) revert UniV3DeploymentSplitHook_InvalidStageForAction();
+        
+        // Validate that terminalToken is a valid terminal token for this projectId
+        address terminal = IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken);
+        if (terminal == address(0)) revert UniV3DeploymentSplitHook_InvalidTerminalToken();
         
         address pool = poolOf[projectId][terminalToken];
         if (pool == address(0)) revert UniV3DeploymentSplitHook_InvalidStageForAction();
@@ -867,6 +879,12 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         // This provides the backing tokens needed to create a balanced LP position
         address terminal = IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken);
         
+        // Track terminal token balance before cash out to ensure we only use tokens obtained from this projectId
+        // This prevents using terminal tokens from other projects that might be sitting in the contract
+        uint256 terminalTokenBalanceBefore = !_isNativeToken(terminalToken)
+            ? IERC20(terminalToken).balanceOf(address(this))
+            : address(this).balance;
+        
         if (terminal != address(0)) {
             uint256 cashOutAmount = projectTokenBalance / 2;
             
@@ -895,21 +913,21 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, Ow
         
         // Get the actual balances after cash out
         uint256 projectTokenAmount = IERC20(projectToken).balanceOf(address(this));
-        uint256 terminalTokenAmount = 0;
         
-        if (!_isNativeToken(terminalToken)) {
-            // For ERC20 terminal tokens, get the balance after cash out
-            terminalTokenAmount = IERC20(terminalToken).balanceOf(address(this));
-            
-            // Approve NonfungiblePositionManager to spend terminal tokens
-            if (terminalTokenAmount > 0) {
-                // Reset approval first to avoid SafeERC20 issues with tokens that don't allow changing non-zero approvals
-                IERC20(terminalToken).safeApprove(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER, 0);
-                IERC20(terminalToken).safeApprove(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER, terminalTokenAmount);
-            }
-        } else {
-            // For native ETH, get the contract's ETH balance after cash out
-            terminalTokenAmount = address(this).balance;
+        // Only use the amount obtained from cashing out this projectId's tokens
+        // This prevents using terminal tokens from other projects
+        uint256 terminalTokenBalanceAfter = !_isNativeToken(terminalToken)
+            ? IERC20(terminalToken).balanceOf(address(this))
+            : address(this).balance;
+        uint256 terminalTokenAmount = terminalTokenBalanceAfter > terminalTokenBalanceBefore
+            ? terminalTokenBalanceAfter - terminalTokenBalanceBefore
+            : 0;
+        
+        // Approve NonfungiblePositionManager to spend terminal tokens (ERC20 only)
+        if (terminalTokenAmount > 0 && !_isNativeToken(terminalToken)) {
+            // Reset approval first to avoid SafeERC20 issues with tokens that don't allow changing non-zero approvals
+            IERC20(terminalToken).safeApprove(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER, 0);
+            IERC20(terminalToken).safeApprove(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER, terminalTokenAmount);
         }
         
         // Approve NonfungiblePositionManager to spend project tokens
