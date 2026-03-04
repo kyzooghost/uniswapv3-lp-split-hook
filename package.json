@@ -1,0 +1,23 @@
+{
+  "name": "@bananapus/lp-split-hook-v6",
+  "version": "0.0.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bananapus/nana-lp-split-hook-v6.git"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "forge test",
+    "test:fork": "FOUNDRY_PROFILE=CI forge test",
+    "coverage": "forge coverage --report lcov --report summary"
+  },
+  "dependencies": {
+    "@bananapus/core-v6": "npm:@bananapus/core-v5@*",
+    "@bananapus/permission-ids-v6": "npm:@bananapus/permission-ids-v5@*",
+    "@openzeppelin/contracts": "^5.2.0",
+    "@prb/math": "^4.1.0"
+  }
+}

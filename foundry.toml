@@ -1,18 +1,47 @@
 [profile.default]
-src = "src"
-out = "out"
-libs = ["lib"]
+solc = '0.8.23'
+evm_version = 'paris'
+sizes = true
+verbosity = 3
+optimizer_runs = 200
+libs = ["node_modules", "lib"]
+extra_output = ['storageLayout']
+fs_permissions = [{ access = "read-write", path = "./"}]
+via_ir = true
 remappings = [
     "forge-std/=lib/forge-std/src/",
     "@openzeppelin/contracts=lib/openzeppelin-contracts/contracts",
     "@bananapus/core=lib/nana-core/src",
+    "@bananapus/permission-ids=node_modules/@bananapus/permission-ids-v6/src",
     "@uniswap/v3-core=lib/v3-core/contracts",
     "@uniswap/v3-core-patched=lib/v3-core-patched",
     "@uniswap/v3-periphery-flattened=lib/v3-periphery-flattened",
     "@uniswap/permit2=lib/permit2",
     "@prb/math=lib/prb-math",
 ]
-# Required to avoid stack too deep for invoking INonfungiblePositionManager.position() as per https://github.com/Uniswap/v3-periphery/issues/273
-optimizer_runs=1000
 
-# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+[rpc_endpoints]
+ethereum = "${RPC_ETHEREUM_MAINNET}"
+optimism = "${RPC_OPTIMISM_MAINNET}"
+arbitrum = "${RPC_ARBITRUM_MAINNET}"
+base = "${RPC_BASE_MAINNET}"
+arbitrum_sepolia = "${RPC_ARBITRUM_SEPOLIA}"
+ethereum_sepolia = "${RPC_ETHEREUM_SEPOLIA}"
+optimism_sepolia = "${RPC_OPTIMISM_SEPOLIA}"
+base_sepolia = "${RPC_BASE_SEPOLIA}"
+celo = "${RPC_CELO_MAINNET}"
+celo_sepolia = "${RPC_CELO_SEPOLIA}"
+
+[profile.ci_sizes]
+optimizer_runs = 200
+
+[invariant]
+fail_on_revert = false
+
+[fuzz]
+runs = 1024
+
+[fmt]
+number_underscore = "thousands"
+multiline_func_header = "all"
+wrap_comments = true
