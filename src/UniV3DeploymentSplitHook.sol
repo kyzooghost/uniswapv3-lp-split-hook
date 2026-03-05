@@ -249,11 +249,14 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         (JBRuleset memory ruleset,) = IJBController(controller).currentRulesetOf(projectId);
         
         // Get the accounting context from the primary terminal for the terminal token
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
-        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf(projectId, terminalToken);
-        
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
+        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf({
+            projectId: projectId,
+            token: terminalToken
+        });
+
         uint32 baseCurrency = ruleset.baseCurrency();
-        
+
         // Calculate weight ratio: if currencies match, use 10^decimals; otherwise get price conversion
         uint256 weightRatio = context.currency == baseCurrency
             ? 10 ** context.decimals
@@ -263,7 +266,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
                 unitCurrency: baseCurrency,
                 decimals: context.decimals
             });
-        
+
         // Convert using formula: projectTokens = (terminalTokens * weight) / weightRatio
         projectTokenOutAmount = mulDiv(terminalTokenInAmount, ruleset.weight, weightRatio);
     }
@@ -276,17 +279,20 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
     /// @param weight The weight to use for calculation (typically from a historical ruleset)
     /// @return projectTokenOutAmount The equivalent project token amount
     function _getProjectTokensOutForTerminalTokensInWithWeight(
-        uint256 projectId, 
+        uint256 projectId,
         address terminalToken,
         uint256 terminalTokenInAmount,
         uint256 weight
     ) internal view returns (uint256 projectTokenOutAmount) {
         address controller = address(IJBDirectory(DIRECTORY).controllerOf(projectId));
         (JBRuleset memory ruleset,) = IJBController(controller).currentRulesetOf(projectId);
-        
+
         // Get the accounting context from the primary terminal for the terminal token
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
-        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf(projectId, terminalToken);
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
+        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf({
+            projectId: projectId,
+            token: terminalToken
+        });
         
         uint32 baseCurrency = ruleset.baseCurrency();
         
@@ -342,16 +348,19 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
     /// @param projectTokenInAmount Project token input amount
     /// @return terminalTokenOutAmount The equivalent terminal token amount
     function _getTerminalTokensOutForProjectTokensIn(
-        uint256 projectId, 
-        address terminalToken, 
+        uint256 projectId,
+        address terminalToken,
         uint256 projectTokenInAmount
     ) internal view returns (uint256 terminalTokenOutAmount) {
         address controller = address(IJBDirectory(DIRECTORY).controllerOf(projectId));
         (JBRuleset memory ruleset,) = IJBController(controller).currentRulesetOf(projectId);
-        
+
         // Get the accounting context from the primary terminal for the terminal token
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
-        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf(projectId, terminalToken);
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
+        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf({
+            projectId: projectId,
+            token: terminalToken
+        });
         
         uint32 baseCurrency = ruleset.baseCurrency();
         
@@ -377,17 +386,20 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
     /// @param weight The weight to use for calculation (typically from a historical ruleset)
     /// @return terminalTokenOutAmount The equivalent terminal token amount
     function _getTerminalTokensOutForProjectTokensInWithWeight(
-        uint256 projectId, 
-        address terminalToken, 
+        uint256 projectId,
+        address terminalToken,
         uint256 projectTokenInAmount,
         uint256 weight
     ) internal view returns (uint256 terminalTokenOutAmount) {
         address controller = address(IJBDirectory(DIRECTORY).controllerOf(projectId));
         (JBRuleset memory ruleset,) = IJBController(controller).currentRulesetOf(projectId);
-        
+
         // Get the accounting context from the primary terminal for the terminal token
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
-        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf(projectId, terminalToken);
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
+        JBAccountingContext memory context = IJBMultiTerminal(terminal).accountingContextForTokenOf({
+            projectId: projectId,
+            token: terminalToken
+        });
         
         uint32 baseCurrency = ruleset.baseCurrency();
         
@@ -440,14 +452,14 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
     function _getCashOutRate(uint256 projectId, address terminalToken) internal view returns (uint256 terminalTokensPerProjectToken) {
         // Get cash out rate for 10^18 project tokens (1 token with 18 decimals)
         // Use the 6-param overload that auto-resolves totalSupply and surplus from terminals
-        try IJBMultiTerminal(address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken))).STORE().currentReclaimableSurplusOf(
-            projectId,
-            10 ** 18, // cashOutCount: 1 project token (18 decimals)
-            new IJBTerminal[](0), // empty = use all terminals
-            new JBAccountingContext[](0), // empty = use all accounting contexts
-            _getTokenDecimals(terminalToken), // decimals
-            uint256(uint160(terminalToken)) // currency
-        ) returns (uint256 reclaimableAmount) {
+        try IJBMultiTerminal(address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}))).STORE().currentReclaimableSurplusOf({
+            projectId: projectId,
+            cashOutCount: 10 ** 18, // 1 project token (18 decimals)
+            terminals: new IJBTerminal[](0), // empty = use all terminals
+            accountingContexts: new JBAccountingContext[](0), // empty = use all accounting contexts
+            decimals: _getTokenDecimals(terminalToken),
+            currency: uint256(uint160(terminalToken))
+        }) returns (uint256 reclaimableAmount) {
             terminalTokensPerProjectToken = reclaimableAmount;
         } catch {
             // If calculation fails, fall back to using weight-based calculation
@@ -535,7 +547,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
     /// @param beneficiary The beneficiary address to claim tokens for (must be revnet operator)
     function claimFeeTokensFor(uint256 projectId, address beneficiary) external {
         // Validate that the beneficiary is the revnet operator for this project
-        if (!IREVDeployer(REV_DEPLOYER).isSplitOperatorOf(projectId, beneficiary)) {
+        if (!IREVDeployer(REV_DEPLOYER).isSplitOperatorOf({projectId: projectId, operator: beneficiary})) {
             revert UniV3DeploymentSplitHook_UnauthorizedBeneficiary();
         }
         
@@ -625,7 +637,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         if (projectTokenBalance == 0) revert UniV3DeploymentSplitHook_NoTokensAccumulated();
 
         // Validate that terminalToken is a valid terminal token for this projectId
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
         if (terminal == address(0)) revert UniV3DeploymentSplitHook_InvalidTerminalToken();
 
         // Deploy the pool and add liquidity
@@ -656,7 +668,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         uint256 increaseAmount1Min
     ) external {
         // Validate that terminalToken is a valid terminal token for this projectId
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
         if (terminal == address(0)) revert UniV3DeploymentSplitHook_InvalidTerminalToken();
 
         address pool = poolOf[projectId][terminalToken];
@@ -859,7 +871,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         );
 
         // Cash out the computed fraction to get terminal tokens for pairing
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, terminalToken));
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: terminalToken}));
 
         // Track terminal token balance before cash out to ensure we only use tokens obtained from this projectId
         uint256 terminalTokenBalanceBefore = !_isNativeToken(terminalToken)
@@ -879,15 +891,15 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
             }
 
             // Cash out the optimal fraction of project tokens
-            IJBMultiTerminal(terminal).cashOutTokensOf(
-                address(this), // holder
-                projectId,
-                cashOutAmount, // cashOutCount
-                terminalToken, // tokenToReclaim (JBConstants.NATIVE_TOKEN for native ETH)
-                effectiveMinReturn, // minTokensReclaimed
-                payable(address(this)), // beneficiary
-                "" // metadata
-            );
+            IJBMultiTerminal(terminal).cashOutTokensOf({
+                holder: address(this),
+                projectId: projectId,
+                cashOutCount: cashOutAmount,
+                tokenToReclaim: terminalToken,
+                minTokensReclaimed: effectiveMinReturn,
+                beneficiary: payable(address(this)),
+                metadata: ""
+            });
         }
         
         // Create the liquidity position with both project tokens and terminal tokens
@@ -992,12 +1004,12 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         uint160 sqrtPriceX96 = _computeInitialSqrtPrice(projectId, terminalToken, projectToken);
 
         // Create pool if it doesn't exist, or initialize if it exists but isn't initialized
-        address newPool = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).createAndInitializePoolIfNecessary(
-            token0,
-            token1,
-            UNISWAP_V3_POOL_FEE,
-            sqrtPriceX96
-        );
+        address newPool = INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).createAndInitializePoolIfNecessary({
+            token0: token0,
+            token1: token1,
+            fee: UNISWAP_V3_POOL_FEE,
+            sqrtPriceX96: sqrtPriceX96
+        });
         poolOf[projectId][terminalToken] = newPool;
     }
 
@@ -1197,7 +1209,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         // If terminal token is native ETH, Uniswap returns WETH - unwrap it to ETH
         if (_isNativeToken(terminalToken)) {
             // Unwrap WETH to ETH
-            INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).unwrapWETH9(amount, address(this));
+            INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).unwrapWETH9({amountMinimum: amount, recipient: address(this)});
             // token is already JBConstants.NATIVE_TOKEN
         }
         
@@ -1208,7 +1220,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         // Route fee portion to fee project
         uint256 beneficiaryTokenCount = 0;
         if (feeAmount > 0) {
-            address feeTerminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(FEE_PROJECT_ID, token));
+            address feeTerminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: FEE_PROJECT_ID, token: token}));
             if (feeTerminal != address(0)) {
                 // Get balance before to track minted tokens
                 address feeProjectToken = address(IJBTokens(TOKENS).tokenOf(FEE_PROJECT_ID));
@@ -1216,27 +1228,27 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
                 
                 if (_isNativeToken(terminalToken)) {
                     // Native ETH - send via payable function
-                    IJBMultiTerminal(feeTerminal).pay{value: feeAmount}(
-                        FEE_PROJECT_ID,
-                        token,
-                        feeAmount,
-                        address(this), // beneficiary
-                        0, // minReturnedTokens
-                        "LP Fee", // memo
-                        "" // metadata
-                    );
+                    IJBMultiTerminal(feeTerminal).pay{value: feeAmount}({
+                        projectId: FEE_PROJECT_ID,
+                        token: token,
+                        amount: feeAmount,
+                        beneficiary: address(this),
+                        minReturnedTokens: 0,
+                        memo: "LP Fee",
+                        metadata: ""
+                    });
                 } else {
                     // ERC20 token
                     IERC20(token).forceApprove(feeTerminal, feeAmount);
-                    IJBMultiTerminal(feeTerminal).pay(
-                        FEE_PROJECT_ID,
-                        token,
-                        feeAmount,
-                        address(this), // beneficiary
-                        0, // minReturnedTokens
-                        "LP Fee", // memo
-                        "" // metadata
-                    );
+                    IJBMultiTerminal(feeTerminal).pay({
+                        projectId: FEE_PROJECT_ID,
+                        token: token,
+                        amount: feeAmount,
+                        beneficiary: address(this),
+                        minReturnedTokens: 0,
+                        memo: "LP Fee",
+                        metadata: ""
+                    });
                 }
                 
                 // Calculate fee tokens minted
@@ -1366,12 +1378,12 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         
         address controller = address(IJBDirectory(DIRECTORY).controllerOf(projectId));
         if (controller != address(0)) {
-            IJBController(controller).burnTokensOf(
-                address(this),
-                projectId,
-                amount,
-                memo
-            );
+            IJBController(controller).burnTokensOf({
+                holder: address(this),
+                projectId: projectId,
+                tokenCount: amount,
+                memo: memo
+            });
             emit TokensBurned(projectId, projectToken, amount);
         }
     }
@@ -1385,7 +1397,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
     function _addToProjectBalance(uint256 projectId, address token, uint256 amount, bool isNative) internal {
         if (amount == 0) return;
         
-        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf(projectId, token));
+        address terminal = address(IJBDirectory(DIRECTORY).primaryTerminalOf({projectId: projectId, token: token}));
         if (terminal == address(0)) return;
 
         // Approve ERC20 tokens before calling addToBalanceOf
@@ -1394,9 +1406,14 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         }
         
         // Call addToBalanceOf once - send value for native ETH, 0 for ERC20
-        IJBMultiTerminal(terminal).addToBalanceOf{value: isNative ? amount : 0}(
-            projectId, token, amount, false, "", ""
-        );
+        IJBMultiTerminal(terminal).addToBalanceOf{value: isNative ? amount : 0}({
+            projectId: projectId,
+            token: token,
+            amount: amount,
+            shouldReturnHeldFees: false,
+            memo: "",
+            metadata: ""
+        });
     }
 
     /// @notice Handle leftover tokens after Uniswap V3 mint operation
@@ -1454,7 +1471,7 @@ contract UniV3DeploymentSplitHook is IUniV3DeploymentSplitHook, IJBSplitHook, JB
         // If terminal token is native ETH, Uniswap returns WETH - unwrap it to ETH
         if (_isNativeToken(terminalToken)) {
             // Unwrap WETH to ETH
-            INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).unwrapWETH9(amount, address(this));
+            INonfungiblePositionManager(UNISWAP_V3_NONFUNGIBLE_POSITION_MANAGER).unwrapWETH9({amountMinimum: amount, recipient: address(this)});
             // token is already JBConstants.NATIVE_TOKEN
         }
         
